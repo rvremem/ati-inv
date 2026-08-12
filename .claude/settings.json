@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\xampp\\\\htdocs\\\\inv\" -Depth 1 | Select-Object Name, @{N=\"Type\";E={if\\($_.PSIsContainer\\){\"Dir\"}else{\"File\"}}} | Format-Table -AutoSize)",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(powershell -Command ' *)"
+    ]
+  }
+}
