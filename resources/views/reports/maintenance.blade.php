@@ -4,12 +4,14 @@
 
 @section('content')
 <div class="container-fluid">
-    <div class="mb-3">
-        <a href="{{ route('reports.index') }}" class="btn btn-secondary btn-sm">
-            <i class="fas fa-arrow-left"></i> Back
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+        <h2 class="mb-0">Maintenance Report</h2>
+        {{-- Carries the filters currently applied, so the download matches
+             what is on screen rather than the whole report. --}}
+        <a href="{{ route('reports.export-csv', ['report' => 'maintenance'] + request()->query()) }}" class="btn btn-outline-primary">
+            <i class="fas fa-file-csv"></i> Export CSV
         </a>
     </div>
-    <h2 class="mb-4">Maintenance Report</h2>
 
     <div class="card">
         <div class="card-body">
@@ -31,6 +33,7 @@
             </table>
         </div>
     </div>
+    <x-back-link :href="route('reports.index')" />
 </div>
 @endsection
 

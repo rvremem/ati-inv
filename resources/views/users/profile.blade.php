@@ -81,7 +81,9 @@
                             <button type="submit" class="btn btn-primary">
                                 <i class="fas fa-save"></i> Update Profile
                             </button>
-                            <a href="{{ route('dashboard') }}" class="btn btn-secondary">
+                            {{-- Kept beside Update Profile rather than moved to the
+                                 page foot: here it reads as this form's cancel. --}}
+                            <a href="{{ route('dashboard') }}" class="btn-back">
                                 <i class="fas fa-arrow-left"></i> Back
                             </a>
                         </div>

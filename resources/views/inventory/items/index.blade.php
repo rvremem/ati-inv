@@ -9,9 +9,14 @@
         {{-- Engineers see Item Parts read-only. The controller guards the write
              endpoints too, since hiding buttons leaves routes open. --}}
         @if ($canManage)
-        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#itemModal" onclick="resetForm()">
-            <i class="fas fa-plus"></i> Add Item
-        </button>
+        <div class="d-flex gap-2">
+            <a href="{{ route('inventory.item-batch-upload') }}" class="btn btn-outline-primary">
+                <i class="fas fa-file-upload"></i> Batch Upload
+            </a>
+            <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#itemModal" onclick="resetForm()">
+                <i class="fas fa-plus"></i> Add Item
+            </button>
+        </div>
         @endif
     </div>
 
@@ -28,7 +33,9 @@
                         <th>Description</th>
                         <th>Manufacturer</th>
                         <th>Type</th>
-                        <th>Unit Cost</th>
+                        <th>Supplier</th>
+                        <th>Warranty</th>
+                        @if ($canSeeCost)<th>Unit Cost</th>@endif
                         <th>Status</th>
                         @if ($canManage)<th style="width:150px;">Actions</th>@endif
                     </tr>
@@ -69,7 +76,7 @@
                         required
                     />
 
-                    <x-form-group
+                    <!-- <x-form-group
                         label="Client"
                         name="customer_id"
                         type="select"
@@ -77,7 +84,7 @@
                         @foreach($customers as $customer)
                             <option value="{{ $customer->id }}">{{ $customer->name }}</option>
                         @endforeach
-                    </x-form-group>
+                    </x-form-group> -->
 
                     <x-form-group
                         label="Manufacturer"
@@ -99,6 +106,30 @@
                         help="e.g., Hardware, Software, Accessory"
                     />
 
+                    {{-- Optional: item_parts.supplier_id is nullable, and every
+                         part that predates the column has none. --}}
+                    <x-form-group
+                        label="Supplier"
+                        name="supplier_id"
+                        type="select"
+                    >
+                        <option value="">— None —</option>
+                        @foreach ($suppliers as $supplier)
+                            <option value="{{ $supplier->id }}">{{ $supplier->name }}</option>
+                        @endforeach
+                    </x-form-group>
+
+                    <x-form-group
+                        label="Warranty"
+                        name="warranty"
+                        type="text"
+                        help="e.g., 3 months, 1 year, 90 days"
+                    />
+
+                    {{-- Cost is Super Admin / Developer only. The controller
+                         also drops it from the payload and refuses to write it,
+                         so hiding the field here is presentation, not the guard. --}}
+                    @if ($canSeeCost)
                     <x-form-group
                         label="Unit Cost"
                         name="unit_cost"
@@ -106,6 +137,7 @@
                         step="0.01"
                         required
                     />
+                    @endif
 
                     <x-form-group
                         label="Minimum Stock Level"
@@ -178,11 +210,14 @@ function editItem(item) {
 
     document.querySelector('input[name="part_no"]').value = item.part_no;
     document.querySelector('input[name="description"]').value = item.description;
-    document.querySelector('select[name="customer_id"]').value = item.customer_id || '';
     document.querySelector('input[name="manufacturer"]').value = item.manufacturer || '';
     document.querySelector('input[name="model"]').value = item.model || '';
     document.querySelector('input[name="type"]').value = item.type;
+    document.querySelector('select[name="supplier_id"]').value = item.supplier_id || '';
+    document.querySelector('input[name="warranty"]').value = item.warranty || '';
+    @if ($canSeeCost)
     document.querySelector('input[name="unit_cost"]').value = item.unit_cost;
+    @endif
     document.querySelector('input[name="min_stock"]').value = item.min_stock;
     document.querySelector('input[name="is_serialized"]').checked = item.is_serialized;
     document.querySelector('select[name="is_active"]').value = item.is_active ? '1' : '0';
@@ -213,7 +248,13 @@ $(function () {
             { data: 'description', render: esc },
             { data: 'manufacturer', render: (d) => esc(d || '-') },
             { data: 'type', render: esc },
+            // supplier_name is the joined suppliers.name; null for parts with none.
+            { data: 'supplier_name', render: (d) => esc(d || '-') },
+            { data: 'warranty', render: (d) => esc(d || '-') },
+
+            @if ($canSeeCost)
             { data: 'unit_cost', className: 'text-end', render: money },
+            @endif
             { data: 'is_active', render: (d) => d
                 ? '<span class="badge bg-success">Active</span>'
                 : '<span class="badge bg-secondary">Inactive</span>' },

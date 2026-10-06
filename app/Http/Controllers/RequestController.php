@@ -14,6 +14,8 @@ use Illuminate\Http\Request;
 
 class RequestController extends Controller
 {
+    use \App\Http\Controllers\Concerns\ScopesByHub;
+
     /**
      * Machine statuses that mean "physically on hand, so it can be requested".
      * Availability is decided by machines.status alone — the request lifecycle
@@ -29,7 +31,8 @@ class RequestController extends Controller
 
     public function partRequests()
     {
-        $items = ItemPart::all();
+        // Only parts held in this user's hub - see ScopesByHub::partsInHubScope().
+        $items = $this->partsInHubScope()->get();
         $customers = Customer::where('is_active', true)->get();
         $locations = Location::where('is_active', true)->get();
         return view('requests.parts.index', compact('items', 'customers', 'locations'));
@@ -37,7 +40,8 @@ class RequestController extends Controller
 
     public function partRequestCreate()
     {
-        $items = ItemPart::all();
+        // Only parts held in this user's hub - see ScopesByHub::partsInHubScope().
+        $items = $this->partsInHubScope()->get();
         $customers = Customer::where('is_active', true)->get();
         $locations = Location::where('is_active', true)->get();
         return view('requests.parts.create', compact('items', 'customers', 'locations'));
@@ -61,6 +65,10 @@ class RequestController extends Controller
         $serials = $validated['serial_no'] ?? [];
         $itemRemarks = $validated['item_remarks'] ?? [];
 
+        // Resolved once for the whole request rather than per line.
+        $partNos = ItemPart::whereIn('id', $items)->pluck('part_no', 'id');
+        $customerName = Customer::find($validated['customer_id'])?->name ?? '-';
+
         foreach ($items as $index => $itemId) {
             PartRequest::create([
                 'pick_date' => $validated['pick_date'],
@@ -72,19 +80,23 @@ class RequestController extends Controller
                 'status' => 'Pending',
                 'requested_by' => auth()->id(),
             ]);
-        }
 
-        ActivityLog::log(
-            'Created Part Request',
-            count($items) . ' item(s) | Pick Date: ' . $validated['pick_date']
-        );
+            // One entry per item, not one summary: "3 item(s)" named nothing
+            // that could be traced back to a part or a serial.
+            ActivityLog::log('Requested Item', sprintf(
+                'Item No: %s | %s | Customer: %s',
+                $partNos[$itemId] ?? "ID {$itemId}",
+                ActivityLog::unitLabel($serials[$index] ?? null, (int) $quantities[$index]),
+                $customerName
+            ));
+        }
 
         return redirect()->route('requests.parts')->with('success', 'Part request created successfully.');
     }
 
     public function partRequestEdit(PartRequest $partRequest)
     {
-        $items = ItemPart::where('is_active', true)->get();
+        $items = $this->partsInHubScope()->where('is_active', true)->get();
         $customers = Customer::where('is_active', true)->get();
         $locations = Location::where('is_active', true)->get();
         return view('requests.parts.edit', compact('partRequest', 'items', 'customers', 'locations'));
@@ -121,14 +133,23 @@ class RequestController extends Controller
             'out_date'    => now(),
             'approved_by' => auth()->user()->name,
             'location_id' => $validated['location_id'],
-            'serial_no'   => $validated['serial_no'],
-            'mris_no'     => $validated['mris_no'],
+            // ?? because validate() omits a nullable key that wasn't submitted.
+            'serial_no'   => $validated['serial_no'] ?? null,
+            'mris_no'     => $validated['mris_no'] ?? null,
         ]);
 
-        ActivityLog::log(
-            'Approved Part Request',
-            "Part Request ID: {$partRequest->id} | MRIS No: {$validated['mris_no']}"
-        );
+        // Same shape as the 'Requested Item' entry so a request and its approval
+        // line up when you read the log. Re-read after the update: approving is
+        // where the serial is finally chosen for a serialised part.
+        $partRequest->refresh()->loadMissing('itemPart', 'customer');
+
+        ActivityLog::log('Approved Item Request', sprintf(
+            'Item No: %s | %s | Customer: %s | MRIS: %s',
+            $partRequest->itemPart->part_no ?? '-',
+            ActivityLog::unitLabel($partRequest->serial_no, (int) $partRequest->quantity),
+            $partRequest->customer->name ?? '-',
+            $partRequest->mris_no ?: '-'
+        ));
 
         return redirect()->route('requests.pending')->with('success', 'Part request approved and issued.');
     }
@@ -180,10 +201,15 @@ class RequestController extends Controller
         // available list straight away.
         $machine?->update(['status' => 'Pending']);
 
-        ActivityLog::log(
-            'Created Machine Request',
-            "Machine: {$machine->serial_no} | Pick Date: {$validated['pick_date']}"
-        );
+        // purpose is nullable on the form, hence the fallback.
+        ActivityLog::log('Requested Machine', sprintf(
+            'Serial: %s | Customer: %s | Purpose: %s',
+            $machine->serial_no,
+            Customer::find($validated['customer_id'])?->name ?? '-',
+            // ?? as well as ?: — validate() omits a nullable key entirely when
+            // the field isn't submitted, so reading it directly can throw.
+            ($validated['purpose'] ?? null) ?: '-'
+        ));
 
         return redirect()->route('requests.machines')->with('success', 'Machine request created successfully.');
     }
@@ -230,7 +256,8 @@ class RequestController extends Controller
             'status' => 'Out',
             'out_date' => now(),
             'approved_by' => auth()->user()->name,
-            'mris_no' => $validated['mris_no'],
+            // ?? because validate() omits a nullable key that wasn't submitted.
+            'mris_no' => $validated['mris_no'] ?? null,
         ]);
 
         $machineRequest->load('machine');
@@ -240,10 +267,16 @@ class RequestController extends Controller
             'out_date' => now(),
         ]);
 
-        ActivityLog::log(
-            'Approved Machine Request',
-            "Machine: {$machineRequest->machine->serial_no} | MRIS No: {$validated['mris_no']}"
-        );
+        // Mirrors the 'Requested Machine' entry.
+        $machineRequest->loadMissing('machine', 'customer');
+
+        ActivityLog::log('Approved Machine Request', sprintf(
+            'Serial: %s | Customer: %s | Purpose: %s | MRIS: %s',
+            $machineRequest->machine->serial_no ?? '-',
+            $machineRequest->customer->name ?? '-',
+            $machineRequest->purpose ?: '-',
+            $machineRequest->mris_no ?: '-'
+        ));
 
         return redirect()->route('requests.pending')->with('success', 'Machine request approved successfully.');
     }
@@ -253,14 +286,14 @@ class RequestController extends Controller
         $machines = Machine::with('customer', 'location', 'category')
             ->whereIn('status', ['Receiving', 'Return'])
             ->get();
-        $items = ItemPart::where('is_active', true)->get();
+        $items = $this->partsInHubScope()->where('is_active', true)->get();
         return view('requests.machine-parts.index', compact('machines', 'items'));
     }
 
     public function machinePartRequestCreate()
     {
         $machines = Machine::with('customer', 'location')->get();
-        $items = ItemPart::where('is_active', true)->get();
+        $items = $this->partsInHubScope()->where('is_active', true)->get();
         return view('requests.machine-parts.create', compact('machines', 'items'));
     }
 
@@ -277,12 +310,43 @@ class RequestController extends Controller
             'item_remarks'     => 'nullable|array',
         ]);
 
-        foreach ($validated['machine_part_id'] as $machinePartId) {
+        // Loaded once, before the update, so the log can name the part and the
+        // machine rather than a machine_parts id.
+        $parts = MachinePart::with('itemPart', 'machine')
+            ->whereIn('id', $validated['machine_part_id'])
+            ->get()
+            ->keyBy('id');
+
+        foreach ($validated['machine_part_id'] as $index => $machinePartId) {
+            $requestRemark = trim((string) ($validated['item_remarks'][$index] ?? '')) ?: null;
+
             // requested_by is what puts this on the submitter's My Requests page.
+            // requested_at is stamped here because the request is only a status
+            // flip on an existing row — nothing else records when it happened.
+            // request_remarks is stored rather than dropped, so the approval can
+            // report the same reason the requester gave.
             MachinePart::where('id', $machinePartId)->update([
                 'status' => 'Pending Out',
                 'requested_by' => auth()->id(),
+                'requested_at' => now(),
+                'request_remarks' => $requestRemark,
             ]);
+
+            // Pulling a part off a machine left no trace at all before this.
+            //
+            // The last field is the requester's own remarks, not machine_parts.
+            // purpose: the request form has no purpose input, and the purpose on
+            // the row describes why the part was *fitted*, which is a different
+            // question from why it is being pulled.
+            $part = $parts->get($machinePartId);
+
+            ActivityLog::log('Requested Machine Part', sprintf(
+                'Item No: %s | %s | Machine: %s | Remarks: %s',
+                $part?->itemPart?->part_no ?? "ID {$machinePartId}",
+                ActivityLog::unitLabel($part?->serial_no, (int) ($validated['quantity'][$index] ?? 1)),
+                $part?->machine?->serial_no ?? '-',
+                $requestRemark ?: '-'
+            ));
         }
 
         return redirect()->route('requests.machine-parts')->with('success', 'Machine part request submitted successfully.');
@@ -292,53 +356,92 @@ class RequestController extends Controller
     {
         $partRequest->update(['status' => 'Denied']);
 
-        ActivityLog::log(
-            'Declined Part Request',
-            "Part Request ID: {$partRequest->id}"
-        );
+        // Same shape as the request and approval entries, so all three stages of
+        // one request read alike. No MRIS: nothing was issued.
+        $partRequest->loadMissing('itemPart', 'customer');
+
+        ActivityLog::log('Declined Item Request', sprintf(
+            'Item No: %s | %s | Customer: %s',
+            $partRequest->itemPart->part_no ?? '-',
+            ActivityLog::unitLabel($partRequest->serial_no, (int) $partRequest->quantity),
+            $partRequest->customer->name ?? '-'
+        ));
 
         return redirect()->route('requests.pending')->with('success', 'Part request declined.');
     }
 
     public function machinePartApprove(MachinePart $machinePart)
     {
-        $machinePart->update(['status' => 'Out']);
+        // Approving is the moment the part actually comes off the machine, so
+        // this is where the disassembly is recorded — the approver is the one
+        // who released it, which is not necessarily the requester.
+        $machinePart->update([
+            'status' => MachinePart::STATUS_DISASSEMBLED,
+            'disassembled_by' => auth()->id(),
+            'disassembled_at' => now(),
+        ]);
 
-        ActivityLog::log(
-            'Approved Machine Part Request',
-            "Machine Part ID: {$machinePart->id}"
-        );
+        // Mirrors the 'Requested Machine Part' entry, down to the same remarks:
+        // request_remarks is what the requester typed, so the pair now reads
+        // consistently. No MRIS here — machine-part requests never carry one.
+        $machinePart->loadMissing('itemPart', 'machine');
+
+        ActivityLog::log('Approved Machine Part Request', sprintf(
+            'Item No: %s | %s | Machine: %s | Remarks: %s',
+            $machinePart->itemPart->part_no ?? '-',
+            ActivityLog::unitLabel($machinePart->serial_no, (int) $machinePart->quantity),
+            $machinePart->machine->serial_no ?? '-',
+            $machinePart->request_remarks ?: '-'
+        ));
 
         return redirect()->route('requests.pending')->with('success', 'Machine part approved and issued.');
     }
 
     public function machinePartDecline(MachinePart $machinePart)
     {
-        $machinePart->update(['status' => 'available']);
+        // Declining leaves the part on the machine, so nothing is disassembled
+        // and the disassembly columns stay as they were.
+        $machinePart->update(['status' => MachinePart::STATUS_ASSEMBLED]);
 
-        ActivityLog::log(
-            'Declined Machine Part Request',
-            "Machine Part ID: {$machinePart->id}"
-        );
+        // request_remarks is left in place by the decline, so the entry can
+        // still say what was asked for and refused.
+        $machinePart->loadMissing('itemPart', 'machine');
+
+        ActivityLog::log('Declined Machine Part Request', sprintf(
+            'Item No: %s | %s | Machine: %s | Remarks: %s',
+            $machinePart->itemPart->part_no ?? '-',
+            ActivityLog::unitLabel($machinePart->serial_no, (int) $machinePart->quantity),
+            $machinePart->machine->serial_no ?? '-',
+            $machinePart->request_remarks ?: '-'
+        ));
 
         return redirect()->route('requests.pending')->with('success', 'Machine part request declined.');
     }
 
     public function machineRequestDecline(MachineRequest $machineRequest)
     {
-        $machineRequest->load('machine');
-        $serial = $machineRequest->machine->serial_no ?? $machineRequest->machine_id;
+        $machineRequest->load('machine', 'customer');
 
-        // Release the machine back to the available pool. Without this it would
-        // stay Pending forever once the request row is gone.
+        $serial = $machineRequest->machine->serial_no ?? $machineRequest->machine_id;
+        $customerName = $machineRequest->customer->name ?? '-';
+        $purpose = $machineRequest->purpose ?: '-';
+
+        // Release the machine back to the available pool, otherwise it would
+        // stay Pending forever.
         $machineRequest->machine?->update(['status' => 'Receiving']);
 
-        $machineRequest->delete();
+        // Marked Denied, not deleted. This used to hard-delete the row —
+        // machine_requests has no soft deletes — so a refused machine request
+        // vanished completely and could not be audited afterwards. Part
+        // requests already worked this way; this brings the two in line.
+        $machineRequest->update(['status' => 'Denied']);
 
-        ActivityLog::log(
-            'Declined Machine Request',
-            "Machine: {$serial}"
-        );
+        ActivityLog::log('Declined Machine Request', sprintf(
+            'Serial: %s | Customer: %s | Purpose: %s',
+            $serial,
+            $customerName,
+            $purpose
+        ));
 
         return redirect()->route('requests.pending')->with('success', 'Machine request declined successfully.');
     }
@@ -372,14 +475,16 @@ class RequestController extends Controller
 
     public function pendingApprovals()
     {
-        $partRequests = PartRequest::with('itemPart', 'customer', 'location')
+        // requestedBy is eager-loaded for the Requestor column — without it the
+        // page runs one extra query per pending row.
+        $partRequests = PartRequest::with('itemPart', 'customer', 'location', 'requestedBy')
             ->where('status', 'Pending')
             ->whereNull('machine_id')
             ->get();
-        $machinePartRequests = MachinePart::with(['itemPart', 'machine'])
+        $machinePartRequests = MachinePart::with(['itemPart', 'machine', 'requestedBy'])
             ->where('status', 'Pending Out')
             ->get();
-        $machineRequests = MachineRequest::with('machine', 'customer', 'location')
+        $machineRequests = MachineRequest::with('machine', 'customer', 'location', 'requestedBy')
             ->where('status', 'Pending')
             ->get();
         $locations = Location::where('is_active', true)->get();

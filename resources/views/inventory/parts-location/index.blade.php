@@ -2,8 +2,49 @@
 
 @section('title', 'Parts Location')
 
-@section('content')
-<div class="container-fluid">
+@section('styles')
+<style>
+    /* Same hub picker as Stock Levels — the two screens answer the same
+       question about the same stock, so they should not look different. */
+    .hub-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+
+    .hub-bar-label {
+        font-size: 12px; font-weight: 700; letter-spacing: .06em;
+        text-transform: uppercase; color: #94a3b8; white-space: nowrap;
+    }
+
+    .hub-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+
+    .hub-pill {
+        border: 1px solid #e2e8f0; background: #fff; color: #475569;
+        border-radius: 999px; padding: 7px 16px; font-size: 13.5px;
+        font-weight: 600; line-height: 1.2; cursor: pointer;
+        transition: background-color .15s, border-color .15s, color .15s, box-shadow .15s;
+    }
+
+    .hub-pill:hover { border-color: #c7d2fe; background: #f5f6ff; color: #4f46e5; }
+
+    .hub-pill.is-active {
+        background: #4f46e5; border-color: #4f46e5; color: #fff;
+        box-shadow: 0 2px 8px rgba(79, 70, 229, .28);
+    }
+
+    .hub-pill:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; }
+
+    .stock-empty { text-align: center; padding: 56px 24px; }
+
+    .stock-empty .icon {
+        width: 64px; height: 64px; border-radius: 50%; background: #f1f5f9;
+        color: #94a3b8; display: inline-flex; align-items: center;
+        justify-content: center; font-size: 26px; margin-bottom: 16px;
+    }
+
+    .stock-empty h5 { color: #0f172a; font-weight: 700; font-size: 17px; margin-bottom: 6px; }
+    .stock-empty p { color: #64748b; font-size: 13.5px; margin: 0 auto; max-width: 380px; }
+</style>
+@endsection
+
+@section('content')<div class="container-fluid">
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h2 class="mb-0">Parts Location</h2>
@@ -18,7 +59,32 @@
 
     <x-alert />
 
-    <div class="card">
+    <div class="card mb-3">
+        <div class="card-body py-3">
+            <div class="hub-bar">
+                <span class="hub-bar-label">Hub</span>
+                <div class="hub-pills" role="group" aria-label="Select a hub">
+                    @foreach ($hubs as $hub)
+                        <button type="button" class="hub-pill"
+                                data-hub-id="{{ $hub->id }}"
+                                data-hub-name="{{ $hub->hub_name }}"
+                                aria-pressed="false">{{ $hub->hub_name }}</button>
+                    @endforeach
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {{-- Shown until a hub is picked; the table card below is hidden meanwhile. --}}
+    <div class="card" id="stockEmpty">
+        <div class="card-body stock-empty">
+            <div class="icon"><i class="fas fa-map-marker-alt"></i></div>
+            <h5>Select a hub to view parts locations</h5>
+            <p>Stock sits on a shelf at one branch, so pick a hub above to see where its parts are.</p>
+        </div>
+    </div>
+
+    <div class="card d-none" id="stockTableCard">
         <div class="card-body">
             {{-- One row per (part number, location) that still holds stock. The
                  quantity is the same on-hand figure Stock Levels shows for the
@@ -79,9 +145,11 @@
                         type="select"
                         required
                     >
+                        {{-- Filtered to the hub on screen by the script below:
+                             stock cannot be moved onto another branch's shelf. --}}
                         <option value="">-- Select Location --</option>
                         @foreach ($locations as $location)
-                            <option value="{{ $location->code }}">{{ $location->code }} — {{ $location->description }}</option>
+                            <option value="{{ $location->code }}" data-hub="{{ $location->hub_id }}">{{ $location->code }} — {{ $location->description }}</option>
                         @endforeach
                     </x-form-group>
                 </div>
@@ -102,10 +170,17 @@
 const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 $(function () {
-    $('#partsLocationTable').DataTable({
+    let hubId = '';
+
+    const table = $('#partsLocationTable').DataTable({
         serverSide: true,
         processing: true,
-        ajax: '{{ route('inventory.parts-location-data') }}',
+        // 0 suppresses the initial request, so no hub-less query is fired.
+        deferLoading: 0,
+        ajax: {
+            url: '{{ route('inventory.parts-location-data') }}',
+            data: d => { d.hub_id = hubId; }
+        },
         responsive: true,
         pageLength: 10,
         lengthMenu: [[10, 25, 50, 100], [10, 25, 50, 100]],
@@ -173,6 +248,48 @@ $(function () {
         dropdownParent: $('#moveModal'),
         placeholder: '-- Select Location --',
         allowClear: true
+    });
+
+    // Every move target, kept aside so the list can be rebuilt per hub.
+    const allMoveOptions = $to.find('option').toArray().map(o => ({
+        value: o.value, text: o.text, hub: o.dataset.hub || ''
+    }));
+
+    function refreshMoveTargets() {
+        const keep = $to.val();
+        $to.empty();
+
+        allMoveOptions
+            .filter(o => o.value === '' || String(o.hub) === String(hubId))
+            .forEach(o => $to.append(new Option(o.text, o.value, false, o.value === keep)));
+
+        $to.trigger('change.select2');
+    }
+
+    $('.hub-pill').on('click', function () {
+        const $pill = $(this);
+
+        if ($pill.hasClass('is-active')) {
+            return;   // already showing this hub
+        }
+
+        $('.hub-pill').removeClass('is-active').attr('aria-pressed', 'false');
+        $pill.addClass('is-active').attr('aria-pressed', 'true');
+
+        hubId = $pill.data('hub-id');
+
+        $('#stockEmpty').addClass('d-none');
+        $('#stockTableCard').removeClass('d-none');
+
+        // Moving stock onto another branch's shelf makes no sense, so the
+        // targets follow the hub being viewed.
+        refreshMoveTargets();
+
+        // Back to page one: row 40 of Manila means nothing in Cebu.
+        table.ajax.reload(null, true);
+
+        // Columns were measured while the card was hidden.
+        table.columns.adjust();
     });
 });
 

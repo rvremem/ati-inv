@@ -5,9 +5,7 @@
 @section('content')
 <div class="container-fluid">
     <div class="d-flex justify-content-between align-items-center mb-4">
-        <a href="{{ route('maintenance.index') }}" class="btn btn-secondary btn-sm">
-            <i class="fas fa-arrow-left"></i> Back to Contracts
-        </a>
+        <h2 class="mb-0">Maintenance Contract Expiry Report</h2>
         {{-- Exports every active contract, not the page on screen: the table
              below is paged 10 at a time. Same style as the Activity Log export. --}}
         <a href="{{ route('maintenance.report-csv') }}" class="btn btn-outline-primary">
@@ -68,6 +66,7 @@
             </table>
         </div>
     </div>
+    <x-back-link :href="route('maintenance.index')">Back to Contracts</x-back-link>
 </div>
 @endsection
 

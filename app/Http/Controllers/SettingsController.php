@@ -8,11 +8,17 @@ use App\Models\Customer;
 use App\Models\Category;
 use App\Models\Role;
 use App\Models\User;
+use App\Http\Controllers\Concerns\ImportsCsv;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
 class SettingsController extends Controller
 {
+    use ImportsCsv;
+
+    /** Batch upload columns for customers, in template order. */
+    public const CUSTOMER_BATCH_COLUMNS = ['name', 'is_active'];
+
     public function __construct()
     {
         $this->middleware('auth');
@@ -114,6 +120,98 @@ class SettingsController extends Controller
         ActivityLog::log('Deleted Customer', "Name: {$customer->name}");
         $customer->delete();
         return redirect()->route('settings.customers')->with('success', 'Customer deleted successfully.');
+    }
+
+    public function customerBatchUpload()
+    {
+        return view('settings.customers.batch-upload', [
+            'columns' => self::CUSTOMER_BATCH_COLUMNS,
+            'sampleRows' => $this->customerSampleRows(),
+        ]);
+    }
+
+    public function customerSampleCsv()
+    {
+        return $this->streamCsv(self::CUSTOMER_BATCH_COLUMNS, $this->customerSampleRows(), 'customers_template.csv');
+    }
+
+    /**
+     * Obvious placeholders, not real customer names: this upload creates
+     * records, so uploading the template unedited makes two junk customers —
+     * named clearly enough to spot and delete.
+     */
+    private function customerSampleRows(): array
+    {
+        return [
+            ['REPLACE-WITH-CUSTOMER-1', '1'],
+            ['REPLACE-WITH-CUSTOMER-2', '0'],
+        ];
+    }
+
+    public function customerBatchStore(Request $request)
+    {
+        $request->validate(['csv_file' => 'required|file|mimes:csv,txt']);
+
+        [$header, $records] = $this->readCsv($request->file('csv_file'));
+
+        // name carries the uniqueness rule on the single-add form, so it is the
+        // customer's natural key and what makes a row a duplicate.
+        $onFile = Customer::pluck('name')
+            ->map(fn ($n) => mb_strtolower(trim((string) $n)))->flip();
+
+        $seen = [];
+        $imported = 0;
+        $skipped = 0;
+        $reasons = [];
+
+        foreach ($records as $i => $row) {
+            $line = $i + 2; // +1 for the header, +1 because humans count from 1
+            $data = $this->rowToPayload($header, $row, self::CUSTOMER_BATCH_COLUMNS);
+
+            if ($data === null) {
+                $skipped++;
+                $reasons[] = "line {$line}: column count does not match the header";
+                continue;
+            }
+
+            $name = $data['name'];
+            $key = mb_strtolower($name);
+
+            if ($name === '') {
+                $skipped++;
+                $reasons[] = "line {$line}: name is required";
+                continue;
+            }
+
+            if ($onFile->has($key)) {
+                $skipped++;
+                $reasons[] = "{$name}: already on file — an import never edits an existing customer";
+                continue;
+            }
+
+            if (isset($seen[$key])) {
+                $skipped++;
+                $reasons[] = "{$name}: listed twice in the file";
+                continue;
+            }
+
+            try {
+                Customer::create([
+                    'name' => $name,
+                    'is_active' => $this->csvBool($data['is_active'], true),
+                ]);
+                $seen[$key] = true;
+                $imported++;
+            } catch (\Throwable $e) {
+                $skipped++;
+                $reasons[] = "{$name}: {$e->getMessage()}";
+            }
+        }
+
+        ActivityLog::log('Batch Uploaded Customers', "{$imported} customer(s) imported, {$skipped} skipped");
+
+        return redirect()->route('settings.customers')
+            ->with('success', $this->batchSummary('customer', $imported, $skipped, $reasons));
     }
 
     // Categories

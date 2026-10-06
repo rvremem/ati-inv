@@ -10,6 +10,7 @@ class Location extends Model
     protected $fillable = [
         'code',
         'description',
+        'hub_id',
         'is_active',
         'created_by',
     ];
@@ -17,6 +18,11 @@ class Location extends Model
     protected $casts = [
         'is_active' => 'boolean',
     ];
+
+    public function hub()
+    {
+        return $this->belongsTo(Hub::class);
+    }
 
     public function createdBy()
     {

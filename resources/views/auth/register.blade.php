@@ -199,6 +199,8 @@
         .req-list li.met i::before { content: '\f058'; font-family: 'Font Awesome 6 Free'; font-weight: 900; }
         .req-list li:not(.met) i::before { content: '\f111'; font-family: 'Font Awesome 6 Free'; font-weight: 400; }
     </style>
+
+    @include('partials.notify')
 </head>
 <body>
 
@@ -292,7 +294,30 @@
                 @error('username')
                     <div class="invalid-feedback">{{ $message }}</div>
                 @else
-                    <div class="input-hint">This will be your login username.</div>
+                    <!-- <div class="input-hint">This will be your login username.</div> -->
+                @enderror
+            </div>
+
+            {{-- Hub --}}
+            <div class="mb-3">
+                <label class="form-label" for="hub_id">
+                    Hub <span class="required">*</span>
+                </label>
+                <select
+                    class="form-control @error('hub_id') is-invalid @enderror"
+                    id="hub_id"
+                    name="hub_id"
+                    required
+                >
+                    <option value="">-- Select Hub --</option>
+                    @foreach ($hubs as $hub)
+                        <option value="{{ $hub->id }}" @selected(old('hub_id') == $hub->id)>{{ $hub->hub_name }}</option>
+                    @endforeach
+                </select>
+                @error('hub_id')
+                    <div class="invalid-feedback">{{ $message }}</div>
+                @else
+                    <div class="input-hint">The branch you are based at.</div>
                 @enderror
             </div>
 
@@ -450,7 +475,7 @@
         const email = document.getElementById('email').value.trim().toLowerCase();
         if (!email.endsWith('@atiph.net')) {
             e.preventDefault();
-            alert('Please use a valid @atiph.net email address.');
+            notify('Please use a valid @atiph.net email address.', 'warning');
             document.getElementById('email').focus();
             return;
         }
@@ -464,7 +489,7 @@
 
         if (!allMet) {
             e.preventDefault();
-            alert('Password does not meet the requirements.');
+            notify('Password does not meet the requirements.', 'warning');
             document.getElementById('password').focus();
         }
     });

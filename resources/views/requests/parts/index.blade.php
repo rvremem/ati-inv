@@ -43,7 +43,7 @@
                             <tr>
                                 <th>Part Number</th>
                                 <th>Description</th>
-                                <th>Serial</th>
+                                <th>Serial / Available Qty</th>
                                 <th>Quantity</th>
                                 <th>Remarks</th>
                                 <th style="width: 50px;">
@@ -92,10 +92,8 @@ function addRow() {
         <td>
             <input type="text" name="description[]" class="form-control form-control-sm description" data-row="${rowCount}" disabled>
         </td>
-        <td>
-            <select name="serial_no[]" class="form-select form-select-sm serial-select" data-row="${rowCount}">
-                <option value="">-- Select Serial --</option>
-            </select>
+        <td class="serial-avail-cell" data-row="${rowCount}">
+            <!-- populated once a part is picked: serial dropdown or available qty -->
         </td>
         <td>
             <input type="number" name="quantity[]" class="form-control form-control-sm quantity" data-row="${rowCount}" required>
@@ -125,32 +123,56 @@ function handlePartChange(e) {
     const row = e.target.dataset.row;
     const itemId = e.target.value;
     const selectedItem = itemsData.find(item => item.id == itemId);
-    const serialSelect = document.querySelector(`select[name="serial_no[]"][data-row="${row}"]`);
+    const cell = document.querySelector(`.serial-avail-cell[data-row="${row}"]`);
+    const quantityInput = document.querySelector(`input[name="quantity[]"][data-row="${row}"]`);
 
-    if (selectedItem) {
-        document.querySelector(`input[name="description[]"][data-row="${row}"]`).value = selectedItem.description;
+    if (!selectedItem) {
+        cell.innerHTML = '';
+        quantityInput.removeAttribute('max');
+        return;
+    }
 
-        if (selectedItem.is_serialized) {
-            // Fetch available serials
-            serialSelect.disabled = false;
-            fetch(`/api/item/${itemId}/available-serials`)
-                .then(response => response.json())
-                .then(data => {
-                    serialSelect.innerHTML = '<option value="">-- Select Serial --</option>';
-                    data.serials.forEach(serial => {
-                        const option = document.createElement('option');
-                        option.value = serial;
-                        option.textContent = serial;
-                        serialSelect.appendChild(option);
-                    });
-                })
-                .catch(error => console.error('Error fetching serials:', error));
-        } else {
-            // Item is not serialized, disable serial dropdown
-            serialSelect.disabled = true;
-            serialSelect.innerHTML = '<option value="">-- Not Serialized --</option>';
-            serialSelect.value = '';
-        }
+    document.querySelector(`input[name="description[]"][data-row="${row}"]`).value = selectedItem.description;
+
+    if (selectedItem.is_serialized) {
+        // Serialized: show the serial picker, fetch its options.
+        quantityInput.removeAttribute('max');
+        cell.innerHTML = `
+            <select name="serial_no[]" class="form-select form-select-sm serial-select" data-row="${row}">
+                <option value="">-- Select Serial --</option>
+            </select>
+        `;
+
+        fetch(`/api/item/${itemId}/available-serials`)
+            .then(response => response.json())
+            .then(data => {
+                const serialSelect = cell.querySelector('.serial-select');
+                data.serials.forEach(serial => {
+                    const option = document.createElement('option');
+                    option.value = serial;
+                    option.textContent = serial;
+                    serialSelect.appendChild(option);
+                });
+            })
+            .catch(error => console.error('Error fetching serials:', error));
+    } else {
+        // Not serialized: show on-hand quantity, fetched fresh so it always
+        // matches Stock Levels rather than a stale figure on the part record.
+        cell.innerHTML = `<span class="text-muted small">Loading…</span>`;
+
+        fetch(`/api/item/${itemId}/available-quantity`)
+            .then(response => response.json())
+            .then(data => {
+                const qty = data.available_quantity ?? 0;
+                cell.innerHTML = `
+                    <input type="text" class="form-control form-control-sm text-center" value="${qty}" disabled>
+                `;
+                quantityInput.setAttribute('max', qty);
+            })
+            .catch(error => {
+                console.error('Error fetching available quantity:', error);
+                cell.innerHTML = `<span class="text-danger small">Failed to load</span>`;
+            });
     }
 }
 
@@ -169,15 +191,15 @@ document.getElementById('requestForm').addEventListener('submit', function(e) {
 
     // Validation
     if (!document.querySelector('input[name="pick_date"]').value) {
-        alert('Please select a date');
+        notify('Please select a date', 'warning');
         return;
     }
     if (!document.querySelector('select[name="customer_id"]').value) {
-        alert('Please select a client');
+        notify('Please select a client', 'warning');
         return;
     }
     if (rowCount <= 0) {
-        alert('Please add at least one item');
+        notify('Please add at least one item', 'warning');
         return;
     }
 

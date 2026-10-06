@@ -2,13 +2,18 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ActivityLog;
 use App\Models\MaintenanceContract;
 use App\Models\Customer;
 use App\Models\Location;
+use App\Http\Controllers\Concerns\ImportsCsv;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 
 class MaintenanceController extends Controller
 {
+    use ImportsCsv;
+
     /**
      * The batch-upload CSV column order. Single source of truth for the
      * downloadable template and the format shown on the upload page, so the two
@@ -385,74 +390,123 @@ class MaintenanceController extends Controller
     public function sampleCsv()
     {
         $this->authorizeManage();
-        $rows = $this->sampleRows();
 
-        return response()->streamDownload(function () use ($rows) {
-            $out = fopen('php://output', 'w');
-            fputcsv($out, self::BATCH_COLUMNS);
-            foreach ($rows as $row) {
-                fputcsv($out, $row);
-            }
-            fclose($out);
-        }, 'maintenance_contracts_template.csv', [
-            'Content-Type' => 'text/csv',
-        ]);
+        return $this->streamCsv(self::BATCH_COLUMNS, $this->sampleRows(), 'maintenance_contracts_template.csv');
     }
+
+    /**
+     * Every column on maintenance_contracts except remarks and end_date is NOT
+     * NULL, so a row missing any of these cannot be inserted at all. Checked up
+     * front to report which field is missing, rather than letting the insert
+     * fail and reporting nothing useful.
+     */
+    private const REQUIRED_BATCH_FIELDS = [
+        'account_manager', 'equipment_type', 'po_no', 'sites', 'brand',
+        'description', 'location', 'company', 'branch', 'serial_no', 'start_date',
+    ];
 
     public function batchStore(Request $request)
     {
         $this->authorizeManage();
-        $request->validate([
-            'csv_file' => 'required|file|mimes:csv,txt',
-        ]);
+        $request->validate(['csv_file' => 'required|file|mimes:csv,txt']);
 
-        $file = $request->file('csv_file');
-        $records = array_map('str_getcsv', file($file->getRealPath()));
-        $header = array_shift($records);
+        [$header, $records] = $this->readCsv($request->file('csv_file'));
+
+        // customer_id is NOT NULL and is resolved from the name in the file, so
+        // an unmatched name is the single most common reason a row fails.
+        $customers = Customer::where('is_active', true)->get()
+            ->mapWithKeys(fn ($c) => [mb_strtolower(trim($c->name)) => $c->id]);
 
         $imported = 0;
         $skipped = 0;
-        foreach ($records as $row) {
-            if (count($row) < 12) {
+        $reasons = [];
+
+        foreach ($records as $i => $row) {
+            $line = $i + 2; // +1 for the header, +1 because humans count from 1
+            $data = $this->rowToPayload($header, $row, self::BATCH_COLUMNS);
+
+            if ($data === null) {
                 $skipped++;
+                $reasons[] = "line {$line}: column count does not match the header";
                 continue;
             }
 
-            $data = array_combine($header, $row);
+            $missing = array_values(array_filter(
+                self::REQUIRED_BATCH_FIELDS,
+                fn ($field) => $data[$field] === ''
+            ));
+
+            if ($missing !== []) {
+                $skipped++;
+                $reasons[] = "line {$line}: missing " . implode(', ', $missing);
+                continue;
+            }
+
+            // Labelled by PO number from here on — it is what identifies the row
+            // to whoever has to fix the spreadsheet.
+            $label = $data['po_no'];
+
+            $customerId = $customers->get(mb_strtolower($data['customer']));
+            if (! $customerId) {
+                $skipped++;
+                $reasons[] = "{$label}: customer '" . ($data['customer'] ?: '(blank)') . "' is not an active customer";
+                continue;
+            }
+
+            try {
+                $start = Carbon::parse($data['start_date']);
+            } catch (\Throwable $e) {
+                $skipped++;
+                $reasons[] = "{$label}: start_date '{$data['start_date']}' is not a date";
+                continue;
+            }
+
+            $months = ctype_digit($data['coverage_months']) ? (int) $data['coverage_months'] : 0;
+
+            // Blank end_date is derived from the start date, as the upload page
+            // promises — it used to be counted from today instead, which put the
+            // expiry in the wrong place for any backdated contract.
+            try {
+                $end = $data['end_date'] !== ''
+                    ? Carbon::parse($data['end_date'])
+                    : $start->copy()->addMonths($months ?: 12);
+            } catch (\Throwable $e) {
+                $skipped++;
+                $reasons[] = "{$label}: end_date '{$data['end_date']}' is not a date";
+                continue;
+            }
+
             try {
                 MaintenanceContract::create([
-                    'account_manager' => $data['account_manager'] ?? '',
-                    'equipment_type' => $data['equipment_type'] ?? '',
-                    'customer_id' => Customer::where('name', $data['customer'] ?? '')->first()?->id,
-                    'po_no' => $data['po_no'] ?? '',
-                    'sites' => $data['sites'] ?? '',
-                    'brand' => $data['brand'] ?? '',
-                    'description' => $data['description'] ?? '',
-                    'location' => $data['location'] ?? '',
-                    'company' => $data['company'] ?? '',
-                    'branch' => $data['branch'] ?? '',
-                    'serial_no' => $data['serial_no'] ?? '',
-                    'coverage_months' => (int)($data['coverage_months'] ?? 0),
-                    'start_date' => $data['start_date'] ?? now(),
-                    'end_date' => $data['end_date'] ?? now()->addMonths(12),
-                    'remarks' => $data['remarks'] ?? '',
+                    'account_manager' => $data['account_manager'],
+                    'equipment_type' => $data['equipment_type'],
+                    'customer_id' => $customerId,
+                    'po_no' => $data['po_no'],
+                    'sites' => $data['sites'],
+                    'brand' => $data['brand'],
+                    'description' => $data['description'],
+                    'location' => $data['location'],
+                    'company' => $data['company'],
+                    'branch' => $data['branch'],
+                    'serial_no' => $data['serial_no'],
+                    'coverage_months' => $months,
+                    'start_date' => $start,
+                    'end_date' => $end,
+                    'remarks' => $data['remarks'] ?: null,
                 ]);
                 $imported++;
-            } catch (\Exception $e) {
-                // Most common cause by far: the 'customer' name doesn't match any
-                // customer on record, and customer_id is NOT NULL.
+            } catch (\Throwable $e) {
                 $skipped++;
-                continue;
+                $reasons[] = "{$label}: {$e->getMessage()}";
             }
         }
 
-        // Skipped rows used to disappear without a word, so a fully-failed import
-        // reported plain "Imported 0 maintenance records."
-        $message = "Imported {$imported} maintenance record(s).";
-        if ($skipped > 0) {
-            $message .= " {$skipped} row(s) skipped — check that each 'customer' matches a customer on record and that all required columns are filled in.";
-        }
+        ActivityLog::log(
+            'Batch Uploaded Maintenance Contracts',
+            "{$imported} contract(s) imported, {$skipped} skipped"
+        );
 
-        return redirect()->route('maintenance.index')->with('success', $message);
+        return redirect()->route('maintenance.index')
+            ->with('success', $this->batchSummary('maintenance contract', $imported, $skipped, $reasons));
     }
 }

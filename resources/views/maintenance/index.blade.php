@@ -9,15 +9,17 @@
         {{-- $canManage comes from MaintenanceController::canManage(). Roles without
              it get the list read-only; the routes behind these buttons 403 anyway. --}}
         @if ($canManage)
-            <div class="btn-group">
+            {{-- Same arrangement as the other index pages: secondary actions
+                 first, Batch Upload, then the primary Add button last. --}}
+            <div class="d-flex gap-2">
+                <a href="{{ route('maintenance.report') }}" class="btn btn-outline-secondary">
+                    <i class="fas fa-file-alt"></i> Expiry Report
+                </a>
+                <a href="{{ route('maintenance.batch-upload') }}" class="btn btn-outline-primary">
+                    <i class="fas fa-file-upload"></i> Batch Upload
+                </a>
                 <a href="{{ route('maintenance.create') }}" class="btn btn-primary">
                     <i class="fas fa-plus"></i> New Contract
-                </a>
-                <a href="{{ route('maintenance.batch-upload') }}" class="btn btn-info">
-                    <i class="fas fa-upload"></i> Batch Upload
-                </a>
-                <a href="{{ route('maintenance.report') }}" class="btn btn-secondary">
-                    <i class="fas fa-file-alt"></i> Expiry Report
                 </a>
             </div>
         @endif

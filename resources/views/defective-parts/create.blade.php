@@ -4,12 +4,7 @@
 
 @section('content')
 <div class="container-fluid">
-    <div class="mb-4">
-        <a href="{{ route('defective-parts.index') }}" class="btn btn-secondary btn-sm">
-            <i class="fas fa-arrow-left"></i> Back
-        </a>
-        <h2 class="mt-3">Add Defective Part</h2>
-    </div>
+    <h2 class="mb-4">Add Defective Part</h2>
 
     <x-alert />
 
@@ -96,5 +91,6 @@
             </form>
         </div>
     </div>
+    <x-back-link :href="route('defective-parts.index')" />
 </div>
 @endsection

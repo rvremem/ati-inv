@@ -51,12 +51,23 @@
                         />
 
                         <x-form-group
+                            label="Warranty"
+                            name="warranty"
+                            type="text"
+                            help="e.g., 3 months, 1 year, 90 days"
+                        />
+
+                        {{-- Super Admin / Developer only; the controller
+                             refuses to write it for anyone else. --}}
+                        @if ($canSeeCost)
+                        <x-form-group
                             label="Unit Cost"
                             name="unit_cost"
                             type="number"
                             step="0.01"
                             required
                         />
+                        @endif
 
                         <x-form-group
                             label="Minimum Stock Level"

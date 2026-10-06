@@ -10,6 +10,7 @@ const STATUS_COLOURS = {
     'Issued':      ['#d1fae5', '#065f46'],
     'Delivered':   ['#d1fae5', '#065f46'],
     'Available':   ['#d1fae5', '#065f46'],
+    'Under Warranty': ['#d1fae5', '#065f46'],
     'In Stock':    ['#d1fae5', '#065f46'],
     'Receiving':   ['#dbeafe', '#1e40af'],
     'Approved':    ['#dbeafe', '#1e40af'],
@@ -21,6 +22,8 @@ const STATUS_COLOURS = {
     'Cancelled':   ['#fee2e2', '#991b1b'],
     'Defective':   ['#fee2e2', '#991b1b'],
     'Unavailable': ['#fee2e2', '#991b1b'],
+    'Expired':     ['#fee2e2', '#991b1b'],
+    'Unknown':     ['#fef3c7', '#92400e'],
     'Inactive':    ['#f1f5f9', '#64748b'],
 };
 

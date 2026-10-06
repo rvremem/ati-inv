@@ -4,12 +4,6 @@
 
 @section('content')
 <div class="container-fluid">
-    <div class="mb-3">
-        <a href="{{ route('reports.index') }}" class="btn btn-secondary btn-sm">
-            <i class="fas fa-arrow-left"></i> Back
-        </a>
-    </div>
-
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h2 class="mb-0">Activity Log</h2>
@@ -45,6 +39,7 @@
                     <label class="form-label">To Date</label>
                     <input type="date" name="to_date" class="form-control" value="{{ request('to_date') }}">
                 </div>
+                <x-hub-filter />
                 <div class="col-md-4 d-flex align-items-end gap-2">
                     <button type="submit" class="btn btn-primary w-100">Filter</button>
                     <a href="{{ route('reports.activity-log') }}" class="btn btn-secondary w-100">Clear</a>
@@ -57,21 +52,28 @@
         <div class="card-body">
             {{-- Server-side: clearing the dates can select all 75k sys_log
                  rows, so search, sort and paging are all done in SQL and only
-                 the current page is sent. Remarks are searchable here but only
-                 shown in the CSV export. --}}
+                 the current page is sent.
+
+                 Details carries the remarks. They used to be export-only, which
+                 meant an entry read "Added New Item" with no way to tell which
+                 item — the detail is the point of the log, so it belongs on
+                 screen as well as in the CSV. --}}
             <table id="activityLogTable" class="table no-datatable mb-0" style="width:100%">
                 <thead>
                     <tr>
                         <th style="width: 180px;">Date &amp; Time</th>
-                        <th style="width: 180px;">User</th>
-                        <th style="width: 110px;">Role</th>
-                        <th>Action</th>
+                        <th style="width: 160px;">User</th>
+                        <th style="width: 100px;">Role</th>
+                        <th style="width: 180px;">Action</th>
+                        <th>Details</th>
+                        <th style="width: 130px;">IP Address</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
             </table>
         </div>
     </div>
+    <x-back-link :href="route('reports.index')" />
 </div>
 @endsection
 
@@ -98,6 +100,7 @@ $(function () {
             data: d => {
                 d.from_date = @json(request('from_date'));
                 d.to_date = @json(request('to_date'));
+                d.hub_id = @json(request('hub_id'));
             }
         },
         responsive: true,
@@ -119,7 +122,18 @@ $(function () {
             { data: 'date', className: 'text-nowrap', render: esc },
             { data: 'user', render: esc },
             { data: 'role', render: roleBadge },
-            { data: 'action', render: esc }
+            { data: 'action', className: 'text-nowrap', render: esc },
+            // Not orderable: remarks are free text, so sorting them is noise.
+            { data: 'remarks', orderable: false, render: (d) => d
+                ? '<span class="text-muted small">' + esc(d) + '</span>'
+                : '<span class="text-muted">—</span>' },
+            // Monospaced so addresses line up column-wise and are easy to
+            // compare down the page. Not orderable for the same reason as
+            // remarks: the server only sorts the four indexed columns.
+            { data: 'ip_address', orderable: false, className: 'text-nowrap', render: (d) =>
+                (d && d !== '—')
+                    ? '<code class="small text-muted">' + esc(d) + '</code>'
+                    : '<span class="text-muted">—</span>' }
         ]
     });
 });

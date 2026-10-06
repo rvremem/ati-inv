@@ -102,7 +102,7 @@ fetch('/api/returnable-machines')
 
 document.getElementById('addRowBtn').addEventListener('click', function() {
     if (allMachines.length === 0) {
-        alert('No returnable machines available');
+        notify('No returnable machines available', 'warning');
         return;
     }
     addRow();
@@ -178,15 +178,15 @@ document.getElementById('returnForm').addEventListener('submit', function(e) {
     e.preventDefault();
 
     if (!document.querySelector('input[name="date_received"]').value) {
-        alert('Please select a date');
+        notify('Please select a date', 'warning');
         return;
     }
     if (!document.querySelector('select[name="customer_id"]').value) {
-        alert('Please select a client');
+        notify('Please select a client', 'warning');
         return;
     }
     if (rowCount <= 0) {
-        alert('Please add at least one machine');
+        notify('Please add at least one machine', 'warning');
         return;
     }
 

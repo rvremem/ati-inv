@@ -3,10 +3,11 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
-class User extends Authenticatable
+class User extends Authenticatable implements MustVerifyEmail
 {
     use Notifiable;
 
@@ -19,6 +20,8 @@ class User extends Authenticatable
         'role',
         'role_id',
         'is_active',
+        'hub_id',
+        'email_verified_at',
     ];
 
     // Keeps $user->role in JSON output and toArray(), where the old string
@@ -31,6 +34,7 @@ class User extends Authenticatable
 
     protected $casts = [
         'is_active' => 'boolean',
+        'email_verified_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         'deleted_at' => 'datetime',
@@ -60,6 +64,62 @@ class User extends Authenticatable
             get: fn () => Role::codeFor($this->role_id),
             set: fn ($value) => ['role_id' => Role::idForCode($value)],
         );
+    }
+
+    public function hub()
+    {
+        return $this->belongsTo(Hub::class);
+    }
+
+    /**
+     * Roles that oversee the whole company rather than a single branch.
+     *
+     * Without a bypass nobody could administer the system: an SA restricted to
+     * one hub cannot see the stock, machines or requests they are responsible
+     * for approving.
+     */
+    public const HUB_UNRESTRICTED_ROLES = ['SA', 'Developer', 'Admin'];
+
+    public function seesAllHubs(): bool
+    {
+        return in_array($this->role, self::HUB_UNRESTRICTED_ROLES, true);
+    }
+
+    /**
+     * The hub id a query should be limited to, or null for no limit at all.
+     *
+     * Fails closed on purpose. A restricted user with no hub set returns 0,
+     * which matches no row, so they see nothing until an admin assigns them a
+     * branch. Returning null there would have quietly granted them the
+     * company-wide view that null means for administrators — the exact
+     * opposite of what an unconfigured account should get.
+     */
+    public function hubScope(): ?int
+    {
+        if ($this->seesAllHubs()) {
+            return null;
+        }
+
+        return $this->hub_id ?? 0;
+    }
+
+    /**
+     * Whether this account sees head-office data.
+     *
+     * Defective items and maintenance contracts are handled centrally, not per
+     * branch. Administrative roles see them because they see everything; a
+     * branch user sees them only if their own hub is flagged as head office.
+     *
+     * A restricted account with no hub is excluded, like everywhere else.
+     */
+    public function atHeadOffice(): bool
+    {
+        if ($this->seesAllHubs()) {
+            return true;
+        }
+
+        return $this->hub_id !== null
+            && Hub::whereKey($this->hub_id)->where('is_head_office', true)->exists();
     }
 
     public function userRole()

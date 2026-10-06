@@ -14,6 +14,8 @@ use App\Models\DefectivePart;
 
 class DashboardController extends Controller
 {
+    use \App\Http\Controllers\Concerns\ScopesByHub;
+
     public function __construct()
     {
         $this->middleware('auth');
@@ -50,7 +52,7 @@ class DashboardController extends Controller
             $lowStock = $snapshot->filter(fn ($it) => (int) $it->min_stock > 0 && $it->on_hand < (int) $it->min_stock);
 
             $data['stats'] = [
-                'total_items'        => ItemPart::where('is_active', true)->count(),
+                'total_items'        => $this->partsInHubScope()->where('is_active', true)->count(),
                 'low_stock'          => $lowStock->count(),
                 'total_machines'     => Machine::where('status', '<>', 'Inactive')->count(),
                 'pending_requests'   => PartRequest::where('status', 'Pending')->count()
@@ -70,7 +72,7 @@ class DashboardController extends Controller
             $data['recent_receiving'] = $this->getRecentReceiving();
         } elseif ($user->role === 'Engineer') {
             $data['stats'] = [
-                'total_items'    => ItemPart::where('is_active', true)->count(),
+                'total_items'    => $this->partsInHubScope()->where('is_active', true)->count(),
                 'total_machines' => Machine::where('status', '<>', 'Inactive')->count(),
                 'pending_own'    => PartRequest::where('requested_by', $user->id)->where('status', 'Pending')->count()
                                     + MachineRequest::where('requested_by', $user->id)->where('status', 'Pending')->count(),
@@ -95,7 +97,7 @@ class DashboardController extends Controller
             $lowStock = $snapshot->filter(fn ($it) => (int) $it->min_stock > 0 && $it->on_hand < (int) $it->min_stock);
 
             $data['stats'] = [
-                'total_items'     => ItemPart::where('is_active', true)->count(),
+                'total_items'     => $this->partsInHubScope()->where('is_active', true)->count(),
                 'total_machines'  => Machine::where('status', '<>', 'Inactive')->count(),
                 'open_defectives' => DefectivePart::count(),
                 'low_stock'       => $lowStock->count(),
@@ -108,7 +110,7 @@ class DashboardController extends Controller
             // Any role added later lands here: the original generic summary.
             $data['stats'] = [
                 'total_users'          => User::where('is_active', true)->count(),
-                'total_items'          => ItemPart::where('is_active', true)->count(),
+                'total_items'          => $this->partsInHubScope()->where('is_active', true)->count(),
                 'total_machines'       => Machine::where('status', '<>', 'Inactive')->count(),
                 'total_parts_in_stock' => $this->stockSnapshot()->where('on_hand', '>=', 1)->count(),
             ];
@@ -120,28 +122,41 @@ class DashboardController extends Controller
     }
 
     /**
-     * On-hand per active item, in one pass.
+     * On-hand per active item in the signed-in user's hub, in one pass.
      *
-     * Mirrors InventoryController::stocksData(), which counts *rows* rather
-     * than summing the quantity column — keep them in sync, along with
-     * onHandByLocationSql(). This also replaces the previous per-item query
-     * loop, which ran 3 queries for every item in the catalogue.
+     * Mirrors InventoryController::stocksData() and onHandByLocationSql() —
+     * keep the three in sync. Two rules they now share:
+     *
+     * Units, not rows. A serialised part is one unit per row so counting rows
+     * happened to be right for those, but an unserialised row carries its whole
+     * quantity, and counting it as 1 reported 5 pieces as 1.
+     *
+     * Hub-limited. receiving carries hub_id; part_requests does not, so a
+     * request is attributed to the hub of whoever raised it.
+     *
+     * This also replaces the previous per-item query loop, which ran 3 queries
+     * for every item in the catalogue.
      */
     private function stockSnapshot()
     {
-        $items = ItemPart::where('is_active', true)
-            ->select('id', 'part_no', 'description', 'min_stock')
+        $items = $this->partsInHubScope()
+            ->where('is_active', true)
+            ->select('item_parts.id', 'item_parts.part_no', 'item_parts.description', 'item_parts.min_stock')
             ->get();
 
-        $countBy = fn ($table, $status) => DB::table($table)
+        $sumReceiving = fn ($status) => $this->applyHubScope(DB::table('receiving'), 'receiving.hub_id')
             ->where('status', $status)
             ->groupBy('item_part_id')
-            ->selectRaw('item_part_id as k, COUNT(*) as q')
+            ->selectRaw('item_part_id as k, SUM(quantity) as q')
             ->pluck('q', 'k');
 
-        $rec = $countBy('receiving', 'Receiving');
-        $ret = $countBy('receiving', 'Return');
-        $out = $countBy('part_requests', 'Out');
+        $rec = $sumReceiving('Receiving');
+        $ret = $sumReceiving('Return');
+        $out = $this->applyRequesterHubScope(DB::table('part_requests'))
+            ->where('status', 'Out')
+            ->groupBy('item_part_id')
+            ->selectRaw('item_part_id as k, SUM(quantity) as q')
+            ->pluck('q', 'k');
 
         return $items->map(function ($it) use ($rec, $ret, $out) {
             $it->on_hand = (int) ($rec[$it->id] ?? 0)
@@ -174,7 +189,8 @@ class DashboardController extends Controller
     {
         $from = now()->subMonths(5)->startOfMonth();
 
-        $inbound = DB::table('receiving')
+        // Scoped so the chart shows this user's branch, not the company.
+        $inbound = $this->applyHubScope(DB::table('receiving'), 'receiving.hub_id')
             ->where('status', 'Receiving')
             ->whereNotNull('date_received')
             ->where('date_received', '>=', $from)
@@ -182,7 +198,8 @@ class DashboardController extends Controller
             ->selectRaw("FORMAT(date_received, 'yyyy-MM') as ym, COUNT(*) as c")
             ->pluck('c', 'ym');
 
-        $outbound = DB::table('part_requests')
+        // part_requests has no hub of its own - attributed to the requester's.
+        $outbound = $this->applyRequesterHubScope(DB::table('part_requests'))
             ->where('status', 'Out')
             ->whereNotNull('out_date')
             ->where('out_date', '>=', $from)
@@ -204,7 +221,7 @@ class DashboardController extends Controller
     /** Machine-status distribution (top 4 + Other), excluding soft-deleted rows. */
     private function machineStatus()
     {
-        $rows = DB::table('machines')
+        $rows = $this->applyHubScope(DB::table('machines'), 'machines.hub_id')
             ->where('status', '<>', 'Inactive')
             ->groupBy('status')
             ->selectRaw('status, COUNT(*) as c')

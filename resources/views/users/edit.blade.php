@@ -67,6 +67,20 @@
                         </x-form-group>
 
                         <x-form-group
+                            label="Hub"
+                            name="hub_id"
+                            type="select"
+                            help="Leave blank for someone who oversees every branch."
+                        >
+                            <option value="">-- No hub --</option>
+                            @foreach ($hubs as $hub)
+                                <option value="{{ $hub->id }}" @selected(old('hub_id', $user->hub_id) == $hub->id)>
+                                    {{ $hub->hub_name }}
+                                </option>
+                            @endforeach
+                        </x-form-group>
+
+                        <x-form-group
                             label="Active"
                             name="is_active"
                             type="checkbox"

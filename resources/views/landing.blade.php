@@ -400,18 +400,19 @@
             @csrf
 
             <div class="mb-3">
-                <label class="form-label" for="username">Username</label>
+                <label class="form-label" for="email">Email</label>
                 <input
-                    type="text"
-                    class="form-control @error('username') is-invalid @enderror"
-                    id="username"
-                    name="username"
-                    value="{{ old('username') }}"
-                    placeholder="Enter your username"
+                    type="email"
+                    class="form-control @error('email') is-invalid @enderror"
+                    id="email"
+                    name="email"
+                    value="{{ old('email') }}"
+                    placeholder="Enter your email"
                     required
                     autofocus
+                    autocomplete="username"
                 >
-                @error('username')
+                @error('email')
                     <div class="invalid-feedback">{{ $message }}</div>
                 @enderror
             </div>
@@ -429,6 +430,12 @@
                 @error('password')
                     <div class="invalid-feedback">{{ $message }}</div>
                 @enderror
+                <div class="text-end mt-2">
+                    <a href="{{ route('password.request') }}"
+                       style="font-size:12.5px; color:#667eea; font-weight:600; text-decoration:none;">
+                        Forgot password?
+                    </a>
+                </div>
             </div>
 
             <button type="submit" class="btn btn-login">

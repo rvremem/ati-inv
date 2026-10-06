@@ -23,11 +23,20 @@
 
     <div class="card">
         <div class="card-body">
-            <x-data-table :headers="['Code', 'Description', 'Status']" :rows="$locations">
+            <x-data-table :headers="['Code', 'Description', 'Hub', 'Status']" :rows="$locations">
                 @foreach ($locations as $location)
                     <tr>
                         <td><strong>{{ $location->code }}</strong></td>
                         <td>{{ $location->description }}</td>
+                        <td>
+                            {{-- A location with no hub cannot be picked when receiving,
+                                 so it is flagged rather than shown as a blank cell. --}}
+                            @if ($location->hub)
+                                <span class="badge bg-secondary">{{ $location->hub->hub_name }}</span>
+                            @else
+                                <span class="badge bg-warning text-dark">No hub</span>
+                            @endif
+                        </td>
                         <td>
                             @if ($location->is_active)
                                 <x-status-badge status="Active" />
@@ -85,6 +94,19 @@
                     />
 
                     <x-form-group
+                        label="Hub"
+                        name="hub_id"
+                        type="select"
+                        required
+                        help="The branch this location is at. Receiving only offers a hub's own locations."
+                    >
+                        <option value="">-- Select Hub --</option>
+                        @foreach ($hubs as $hub)
+                            <option value="{{ $hub->id }}">{{ $hub->hub_name }}</option>
+                        @endforeach
+                    </x-form-group>
+
+                    <x-form-group
                         label="Status"
                         name="is_active"
                         type="select"
@@ -134,6 +156,9 @@ function editLocation(location) {
 
     document.querySelector('input[name="code"]').value = location.code;
     document.querySelector('input[name="description"]').value = location.description;
+    // Blank rather than a stale value when the row somehow has no hub, so
+    // saving cannot silently move it to whichever option happened to be first.
+    document.querySelector('select[name="hub_id"]').value = location.hub_id ?? '';
     document.querySelector('select[name="is_active"]').value = location.is_active ? '1' : '0';
 }
 </script>

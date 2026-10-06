@@ -4,12 +4,7 @@
 
 @section('content')
 <div class="container-fluid">
-    <div class="mb-4">
-        <a href="{{ route('receiving.machines') }}" class="btn btn-secondary btn-sm">
-            <i class="fas fa-arrow-left"></i> Back
-        </a>
-        <h2 class="mt-3">Add Parts to {{ $machine->serial_no }}</h2>
-    </div>
+    <h2 class="mb-4">Add Parts to {{ $machine->serial_no }}</h2>
 
     <x-alert />
 
@@ -48,6 +43,8 @@
         </div>
     </div>
 </div>
+
+    <x-back-link :href="route('receiving.machines')" />
 
 <script>
 let partRowCount = 0;

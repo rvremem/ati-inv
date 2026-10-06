@@ -15,7 +15,7 @@
 
     <div class="card">
         <div class="card-body">
-            <x-data-table :headers="['Username', 'Name', 'Email', 'Role', 'Status']" :rows="$users">
+            <x-data-table :headers="['Username', 'Name', 'Email', 'Role', 'Hub', 'Status']" :rows="$users">
                 @foreach ($users as $user)
                     <tr>
                         <td><strong>{{ $user->username }}</strong></td>
@@ -23,6 +23,15 @@
                         <td>{{ $user->email ?? '-' }}</td>
                         <td>
                             <span class="badge bg-primary">{{ $user->userRole->name ?? $user->role ?? '—' }}</span>
+                        </td>
+                        <td>
+                            {{-- Blank for an administrator who oversees every
+                                 branch rather than belonging to one. --}}
+                            @if ($user->hub)
+                                <span class="badge bg-secondary">{{ $user->hub->hub_name }}</span>
+                            @else
+                                <span class="text-muted">—</span>
+                            @endif
                         </td>
                         <td>
                             @if ($user->is_active)

@@ -9,9 +9,6 @@
             <h2>Edit Parts Location</h2>
             <small class="text-muted">Reassign storage locations for received parts</small>
         </div>
-        <a href="{{ route('inventory.locations') }}" class="btn btn-outline-secondary">
-            <i class="fas fa-arrow-left"></i> Back to Locations
-        </a>
     </div>
 
     <x-alert />
@@ -94,6 +91,8 @@
         </div>
     </form>
 </div>
+
+    <x-back-link :href="route('inventory.locations')">Back to Locations</x-back-link>
 
 <script>
     document.querySelectorAll('.location-select').forEach(function (sel) {

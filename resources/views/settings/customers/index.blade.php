@@ -6,9 +6,14 @@
 <div class="container-fluid">
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h2>Customers</h2>
-        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#customerModal" onclick="resetCustomerForm()">
-            <i class="fas fa-plus"></i> Add Customer
-        </button>
+        <div class="d-flex gap-2">
+            <a href="{{ route('settings.customer-batch-upload') }}" class="btn btn-outline-primary">
+                <i class="fas fa-file-upload"></i> Batch Upload
+            </a>
+            <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#customerModal" onclick="resetCustomerForm()">
+                <i class="fas fa-plus"></i> Add Customer
+            </button>
+        </div>
     </div>
 
     <x-alert />

@@ -4,12 +4,14 @@
 
 @section('content')
 <div class="container-fluid">
-    <div class="mb-3">
-        <a href="{{ route('reports.index') }}" class="btn btn-secondary btn-sm">
-            <i class="fas fa-arrow-left"></i> Back
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+        <h2 class="mb-0">Machines Report</h2>
+        {{-- Carries the filters currently applied, so the download matches
+             what is on screen rather than the whole report. --}}
+        <a href="{{ route('reports.export-csv', ['report' => 'machines'] + request()->query()) }}" class="btn btn-outline-primary">
+            <i class="fas fa-file-csv"></i> Export CSV
         </a>
     </div>
-    <h2 class="mb-4">Machines Report</h2>
 
     <div class="card mb-4">
         <div class="card-body">
@@ -18,6 +20,7 @@
                     <label class="form-label">As of Date</label>
                     <input type="date" name="as_of_date" class="form-control" value="{{ request('as_of_date') }}">
                 </div>
+                <x-hub-filter />
                 <div class="col-md-2 d-flex align-items-end">
                     <button type="submit" class="btn btn-primary w-100">Filter</button>
                 </div>
@@ -44,6 +47,7 @@
             </table>
         </div>
     </div>
+    <x-back-link :href="route('reports.index')" />
 </div>
 @endsection
 
@@ -53,7 +57,7 @@
 $(function () {
     $('#machinesReportTable').DataTable(reportTableOptions(
         '{{ route('reports.machines-data') }}',
-        @json(request()->only(['as_of_date'])),
+        @json(request()->only(['as_of_date', 'hub_id'])),
         [
             { data: 'date_received', render: esc },
             { data: 'serial_no', render: (d) => '<strong>' + esc(d) + '</strong>' },

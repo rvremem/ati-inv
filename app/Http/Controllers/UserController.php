@@ -2,24 +2,42 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Hub;
 use App\Models\Role;
 use App\Models\User;
+use App\Http\Controllers\Concerns\ScopesByHub;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
 class UserController extends Controller
 {
+    use ScopesByHub;
+
     public function __construct()
     {
         $this->middleware('auth');
     }
 
+    /**
+     * Forces a restricted administrator's own hub onto the record.
+     *
+     * The form only offers hubs they may see, but hub_id is a posted value —
+     * without this, editing the request would file a user into a branch the
+     * poster cannot even view. Unrestricted roles keep whatever they chose,
+     * including blank.
+     */
+    private function clampHub(array &$validated): void
+    {
+        if (($allowed = $this->hubScope()) !== null) {
+            $validated['hub_id'] = $allowed;
+        }
+    }
     public function index()
     {
         if (auth()->user()->role === 'Engineer') {
-            $users = User::where('id', auth()->id())->get();
+            $users = User::with('hub')->where('id', auth()->id())->get();
         } else {
-            $users = User::get();
+            $users = User::with('hub')->get();
         }
         return view('users.index', compact('users'));
     }
@@ -29,7 +47,12 @@ class UserController extends Controller
         if (auth()->user()->role === 'Engineer') {
             abort(403);
         }
-        return view('users.create', ['roles' => Role::selectable()]);
+        return view('users.create', [
+            'roles' => Role::selectable(),
+            // Only hubs this administrator may see, so a branch admin
+            // cannot post a colleague into someone else's hub.
+            'hubs' => $this->selectableHubs(),
+        ]);
     }
 
     public function store(Request $request)
@@ -41,7 +64,12 @@ class UserController extends Controller
             'password' => 'required|min:6|confirmed',
             // Valid roles come from the roles table, so adding one there is enough.
             'role' => ['required', Rule::in(Role::codes())],
+            // Nullable: an administrator who oversees every branch has no
+            // single hub of their own, and the column is nullable to match.
+            'hub_id' => 'nullable|exists:hub,id',
         ]);
+
+        $this->clampHub($validated);
 
         $validated['password'] = bcrypt($validated['password']);
         User::create($validated);
@@ -53,7 +81,11 @@ class UserController extends Controller
         if (auth()->user()->role === 'Engineer' && auth()->id() !== $user->id) {
             abort(403);
         }
-        return view('users.edit', ['user' => $user, 'roles' => Role::selectable()]);
+        return view('users.edit', [
+            'user' => $user,
+            'roles' => Role::selectable(),
+            'hubs' => $this->selectableHubs(),
+        ]);
     }
 
     public function update(Request $request, User $user)
@@ -68,10 +100,17 @@ class UserController extends Controller
             'password' => 'nullable|min:6|confirmed',
             // Valid roles come from the roles table, so adding one there is enough.
             'role' => ['required', Rule::in(Role::codes())],
+            'hub_id' => 'nullable|exists:hub,id',
             'is_active' => 'boolean',
         ]);
 
-        if ($validated['password']) {
+        $this->clampHub($validated);
+
+        // ?? null because a nullable field that is not submitted at all is
+        // absent from the validated array rather than empty. The forms always
+        // post the box, so this only bites a caller that does not — but it
+        // threw an undefined-key error when one did.
+        if ($validated['password'] ?? null) {
             $validated['password'] = bcrypt($validated['password']);
         } else {
             unset($validated['password']);
@@ -112,7 +151,11 @@ class UserController extends Controller
             return back()->with('error', 'Current password is incorrect.');
         }
 
-        if ($validated['password']) {
+        // ?? null because a nullable field that is not submitted at all is
+        // absent from the validated array rather than empty. The forms always
+        // post the box, so this only bites a caller that does not — but it
+        // threw an undefined-key error when one did.
+        if ($validated['password'] ?? null) {
             $validated['password'] = bcrypt($validated['password']);
         } else {
             unset($validated['password']);

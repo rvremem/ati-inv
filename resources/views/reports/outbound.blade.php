@@ -4,12 +4,14 @@
 
 @section('content')
 <div class="container-fluid">
-    <div class="mb-3">
-        <a href="{{ route('reports.index') }}" class="btn btn-secondary btn-sm">
-            <i class="fas fa-arrow-left"></i> Back
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+        <h2 class="mb-0">Outbound Report</h2>
+        {{-- Carries the filters currently applied, so the download matches
+             what is on screen rather than the whole report. --}}
+        <a href="{{ route('reports.export-csv', ['report' => 'outbound'] + request()->query()) }}" class="btn btn-outline-primary">
+            <i class="fas fa-file-csv"></i> Export CSV
         </a>
     </div>
-    <h2 class="mb-4">Outbound Report</h2>
 
     <div class="card mb-4">
         <div class="card-body">
@@ -22,6 +24,7 @@
                     <label class="form-label">To Date</label>
                     <input type="date" name="to_date" class="form-control" value="{{ request('to_date') }}">
                 </div>
+                <x-hub-filter />
                 <div class="col-md-4 d-flex align-items-end">
                     <button type="submit" class="btn btn-primary w-100">Filter</button>
                 </div>
@@ -48,16 +51,24 @@
             </table>
         </div>
     </div>
+    <x-back-link :href="route('reports.index')" />
 </div>
 @endsection
 
 @section('scripts')
 @include('partials.datatable-helpers')
+@php
+    // Assigned first, then passed to @json as a single variable: inlining
+    // request()->only([...]) with this many keys overruns Blade's
+    // directive-argument matcher, which truncates the array and emits
+    // unparseable PHP. Same reason as the machine parts report.
+    $filters = request()->only(['from_date', 'to_date', 'customer_id', 'hub_id']);
+@endphp
 <script>
 $(function () {
     $('#outboundTable').DataTable(reportTableOptions(
         '{{ route('reports.outbound-data') }}',
-        @json(request()->only(['from_date', 'to_date', 'customer_id'])),
+        @json($filters),
         [
             { data: 'out_date', render: esc },
             { data: 'mris_no', render: esc },

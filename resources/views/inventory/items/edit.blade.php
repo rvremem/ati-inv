@@ -55,6 +55,18 @@
                         />
 
                         <x-form-group
+                            label="Warranty"
+                            name="warranty"
+                            type="text"
+                            :value="$item->warranty"
+                            help="e.g., 3 months, 1 year, 90 days"
+                        />
+
+                        {{-- Super Admin / Developer only. This one rendered
+                             the stored cost into the page, so gating it is a
+                             disclosure fix, not just a tidy-up. --}}
+                        @if ($canSeeCost)
+                        <x-form-group
                             label="Unit Cost"
                             name="unit_cost"
                             type="number"
@@ -62,6 +74,7 @@
                             :value="$item->unit_cost"
                             required
                         />
+                        @endif
 
                         <x-form-group
                             label="Minimum Stock Level"

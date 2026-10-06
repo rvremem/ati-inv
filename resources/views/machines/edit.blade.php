@@ -207,11 +207,11 @@ document.getElementById('machineForm').addEventListener('submit', function(e) {
 
     // Validation
     if (!document.querySelector('input[name="serial_no"]').value) {
-        alert('Please enter serial number');
+        notify('Please enter serial number', 'warning');
         return;
     }
     if (!document.querySelector('input[name="description"]').value) {
-        alert('Please enter description');
+        notify('Please enter description', 'warning');
         return;
     }
 

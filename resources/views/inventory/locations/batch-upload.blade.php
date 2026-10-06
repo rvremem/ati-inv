@@ -15,13 +15,17 @@
 
                     <div class="alert alert-info" role="alert">
                         <h6>CSV Format Required:</h6>
-                        <p class="mb-0 small">
-                            code, description, is_active
+                        <p class="mb-2 small">{{ implode(', ', $columns) }}</p>
+                        <p class="mb-0 small text-muted">
+                            <strong>hub</strong> is matched by name against the Hubs list and is
+                            <strong>required</strong> &mdash; receiving offers locations by hub, so one
+                            loaded without a hub would exist but never appear in a dropdown.
+                            <strong>is_active</strong> defaults to Active if omitted.
                         </p>
                     </div>
 
                     <div class="mb-3">
-                        <a href="{{ asset('samples/locations_sample.csv') }}" class="btn btn-outline-success" download>
+                        <a href="{{ route('inventory.location-sample-csv') }}" class="btn btn-outline-success">
                             <i class="fas fa-download"></i> Download Sample CSV Template
                         </a>
                     </div>
@@ -46,7 +50,12 @@
                         </div>
 
                         <div class="alert alert-warning">
-                            <strong>Note:</strong> Rows with a duplicate code or missing code/description will be skipped. <code>is_active</code> defaults to Active if omitted.
+                            <strong>Note:</strong> A row is skipped and reported back with the reason when its
+                            <code>code</code> is already on file or listed twice, when <code>code</code> or
+                            <code>description</code> is missing, or when its <code>hub</code> is missing or not
+                            on file. The rest still import. Unlike suppliers, a hub that isn't on file is
+                            <strong>not</strong> created for you &mdash; hubs are a fixed list, so an unknown
+                            name is a typo rather than a new branch.
                         </div>
 
                         <div class="d-flex gap-2">
@@ -66,9 +75,17 @@
                     <h5 class="mb-0">Sample CSV Format</h5>
                 </div>
                 <div class="card-body">
-                    <pre class="bg-light p-3 rounded"><small>code,description,is_active
-CEBU,Cebu Branch,1
-DAVAO,Davao Branch,1</small></pre>
+                    {{-- Rendered from the same rows the template download uses, so what
+                         is shown here and what lands in the file cannot drift apart. --}}
+                    @php
+                        $csvLine = fn ($values) => implode(',', array_map(
+                            fn ($v) => str_contains((string) $v, ',') ? '"' . $v . '"' : $v,
+                            $values
+                        ));
+                    @endphp
+                    <pre class="bg-light p-3 rounded mb-0" style="overflow-x:auto;"><small>{{ $csvLine($columns) }}
+@foreach ($sampleRows as $row){{ $csvLine($row) }}
+@endforeach</small></pre>
                 </div>
             </div>
         </div>

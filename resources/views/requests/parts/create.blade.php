@@ -183,15 +183,15 @@ document.getElementById('requestForm').addEventListener('submit', function(e) {
 
     // Validation
     if (!document.querySelector('input[name="pick_date"]').value) {
-        alert('Please select a date');
+        notify('Please select a date', 'warning');
         return;
     }
     if (!document.querySelector('select[name="customer_id"]').value) {
-        alert('Please select a client');
+        notify('Please select a client', 'warning');
         return;
     }
     if (rowCount <= 0) {
-        alert('Please add at least one item');
+        notify('Please add at least one item', 'warning');
         return;
     }
 

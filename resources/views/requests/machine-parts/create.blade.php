@@ -239,7 +239,7 @@ function removePartRow(rowId) {
 document.getElementById('requestPartsForm').addEventListener('submit', function (e) {
     e.preventDefault();
     if (!document.getElementById('modalPickDate').value) {
-        alert('Please enter a pick-up date');
+        notify('Please enter a pick-up date', 'warning');
         return;
     }
     this.submit();

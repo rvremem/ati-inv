@@ -20,4 +20,9 @@ class Supplier extends Model
     {
         return $this->hasMany(Receiving::class);
     }
+
+    public function itemParts()
+    {
+        return $this->hasMany(ItemPart::class);
+    }
 }

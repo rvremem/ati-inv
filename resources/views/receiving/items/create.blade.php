@@ -43,7 +43,8 @@
                                     required
                                 >
                                     @foreach ($items as $item)
-                                        <option value="{{ $item->id }}">{{ $item->part_no }} - {{ $item->description }}</option>
+                                        {{-- data-serialized drives the quantity lock below. --}}
+                                        <option value="{{ $item->id }}" data-serialized="{{ $item->is_serialized ? 1 : 0 }}">{{ $item->part_no }} - {{ $item->description }}</option>
                                     @endforeach
                                 </x-form-group>
                             </div>
@@ -110,6 +111,21 @@
                         <div class="row">
                             <div class="col-md-6">
                                 <x-form-group
+                                    label="Hub"
+                                    name="hub_id"
+                                    type="select"
+                                >
+                                    <option value="">-- Select Hub --</option>
+                                    @foreach ($hubs as $hub)
+                                        <option value="{{ $hub->id }}" @selected(old('hub_id') == $hub->id)>{{ $hub->hub_name }}</option>
+                                    @endforeach
+                                </x-form-group>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-6">
+                                <x-form-group
                                     label="Status"
                                     name="status"
                                     type="select"
@@ -136,9 +152,45 @@
                             </a>
                         </div>
                     </form>
+
+                    <script>
+                    // A serialised part is one physical unit, so its quantity is
+                    // fixed at 1 and locked rather than typed. readOnly, not
+                    // disabled — a disabled input is never submitted. The
+                    // controller enforces the same rule regardless of this.
+                    (function () {
+                        const itemSelect = document.getElementById('item_part_id');
+                        const qtyInput = document.getElementById('quantity');
+                        if (!itemSelect || !qtyInput) { return; }
+
+                        function syncQuantity() {
+                            const option = itemSelect.options[itemSelect.selectedIndex];
+                            const serialised = option && option.dataset.serialized === '1';
+
+                            if (serialised) {
+                                qtyInput.value = 1;
+                                qtyInput.readOnly = true;
+                                qtyInput.dataset.auto = '1';
+                            } else {
+                                qtyInput.readOnly = false;
+                                if (qtyInput.dataset.auto === '1') {
+                                    qtyInput.value = '';
+                                    delete qtyInput.dataset.auto;
+                                }
+                            }
+                        }
+
+                        itemSelect.addEventListener('change', syncQuantity);
+                        syncQuantity(); // the select already has a value on load
+                    })();
+                    </script>
                 </div>
             </div>
         </div>
     </div>
 </div>
+@endsection
+
+@section('scripts')
+@include('partials.hub-locations')
 @endsection

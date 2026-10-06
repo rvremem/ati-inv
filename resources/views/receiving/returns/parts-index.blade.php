@@ -38,7 +38,19 @@
                 </div>
 
                 <div class="row mb-3">
-                    <div class="col-md-12">
+                    <div class="col-md-3">
+                        <x-form-group
+                            label="Hub"
+                            name="hub_id"
+                            type="select"
+                        >
+                            <option value="">-- Select Hub --</option>
+                            @foreach($hubs as $hub)
+                                <option value="{{ $hub->id }}" @selected(old('hub_id') == $hub->id)>{{ $hub->hub_name }}</option>
+                            @endforeach
+                        </x-form-group>
+                    </div>
+                    <div class="col-md-9">
                         <x-form-group
                             label="Remarks"
                             name="remarks"
@@ -150,6 +162,21 @@ function handlePartChange(e, row) {
 
     if (part) {
         row.querySelector('.description').value = part.description || '';
+
+        // A serialised part comes back one unit at a time, so the quantity is
+        // fixed at 1 and locked. The controller enforces the same rule.
+        const qtyInput = row.querySelector('.quantity');
+        if (part.is_serialized) {
+            qtyInput.value = 1;
+            qtyInput.readOnly = true;
+            qtyInput.dataset.auto = '1';
+        } else {
+            qtyInput.readOnly = false;
+            if (qtyInput.dataset.auto === '1') {
+                qtyInput.value = '';
+                delete qtyInput.dataset.auto;
+            }
+        }
     }
 
     // Fetch serials for this part with status 'Out'
@@ -173,7 +200,13 @@ function handlePartChange(e, row) {
 function handleSerialChange(e, row) {
     const serialData = JSON.parse(e.target.options[e.target.selectedIndex].dataset.serial || '{}');
 
-    row.querySelector('.quantity').value = serialData.quantity || '';
+    const qtyInput = row.querySelector('.quantity');
+    // Don't let the receiving row's stored quantity overwrite the locked 1 on a
+    // serialised part — that value can be anything on legacy rows.
+    if (qtyInput.dataset.auto !== '1') {
+        qtyInput.value = serialData.quantity || '';
+    }
+
     row.querySelector('.location').value = serialData.location || '';
     row.querySelector('.location-id').value = serialData.location_id || '';
 }
@@ -192,15 +225,15 @@ document.getElementById('returnForm').addEventListener('submit', function(e) {
     e.preventDefault();
 
     if (!document.querySelector('input[name="date_received"]').value) {
-        alert('Please select a date');
+        notify('Please select a date', 'warning');
         return;
     }
     if (!document.querySelector('select[name="customer_id"]').value) {
-        alert('Please select a client');
+        notify('Please select a client', 'warning');
         return;
     }
     if (rowCount <= 0) {
-        alert('Please add at least one item');
+        notify('Please add at least one item', 'warning');
         return;
     }
 

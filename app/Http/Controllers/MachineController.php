@@ -8,6 +8,7 @@ use App\Models\MachinePart;
 use App\Models\Category;
 use App\Models\Customer;
 use App\Models\Supplier;
+use App\Models\Hub;
 use App\Models\Location;
 use App\Models\ItemPart;
 use Illuminate\Http\Request;
@@ -17,6 +18,8 @@ use Illuminate\Support\Facades\DB;
 
 class MachineController extends Controller
 {
+    use \App\Http\Controllers\Concerns\ScopesByHub;
+
     /**
      * Batch-upload column lists. Neither file carries a database id: the import
      * resolves every label to one. That is the whole point of the two-file
@@ -62,7 +65,8 @@ class MachineController extends Controller
         $customers = Customer::where('is_active', true)->get();
         $suppliers = Supplier::where('is_active', true)->get();
         $locations = Location::where('is_active', true)->get();
-        return view('machines.create', compact('categories', 'customers', 'suppliers', 'locations'));
+        $hubs = $this->selectableHubs();
+        return view('machines.create', compact('categories', 'customers', 'suppliers', 'locations', 'hubs'));
     }
 
     public function store(Request $request)
@@ -77,12 +81,27 @@ class MachineController extends Controller
             'customer_id' => 'nullable|exists:customers,id',
             'supplier_id' => 'nullable|exists:suppliers,id',
             'location_id' => 'nullable|exists:locations,id',
+            'hub_id' => 'nullable|exists:hub,id',
         ]);
 
+        // A restricted user may only file records against their own hub. The
+        // form already offers just that one, but the field is a posted value:
+        // without this, editing the request would book stock into a branch
+        // they cannot even see.
+        if (($allowed = $this->hubScope()) !== null) {
+            $validated['hub_id'] = $allowed;
+        }
         $validated['created_by'] = auth()->id();
         $validated['status'] = 'Receiving';
         $machine = Machine::create($validated);
-        ActivityLog::log('Created Machine', "Serial: {$machine->serial_no} | {$machine->description}");
+        // Machine counterpart of 'Added New Item' — the serial is the machine's
+        // item number, and like the catalogue add it carries no quantity and no
+        // date. location_id is nullable on the form, hence the fallback.
+        ActivityLog::log('Added New Machine', sprintf(
+            'Serial: %s | Location: %s',
+            $machine->serial_no,
+            $machine->location->code ?? '-'
+        ));
 
         return redirect()->route('machines.index')->with('success', 'Machine created successfully.');
     }
@@ -142,6 +161,8 @@ class MachineController extends Controller
                 'item_part_id' => $partId,
                 'quantity' => $quantities[$index],
                 'remarks' => $remarks[$index] ?? null,
+                'assembled_by' => auth()->id(),
+                'assembled_at' => now(),
             ]);
         }
 
@@ -184,7 +205,16 @@ class MachineController extends Controller
                 ->first() : null;
 
             if ($existing) {
-                $existing->update(['status' => 'available']);
+                // Refitting a part that was previously pulled. The row is reused,
+                // so the disassembly is cleared: the part is back on the machine
+                // and reporting it as both fitted and removed would be wrong.
+                $existing->update([
+                    'status' => MachinePart::STATUS_ASSEMBLED,
+                    'assembled_by' => auth()->id(),
+                    'assembled_at' => now(),
+                    'disassembled_by' => null,
+                    'disassembled_at' => null,
+                ]);
             } else {
                 MachinePart::create([
                     'machine_id' => $machine->id,
@@ -192,7 +222,9 @@ class MachineController extends Controller
                     'quantity' => (int)$validated['quantity'][$index],
                     'serial_no' => $serial,
                     'remarks' => $validated['remarks'][$index] ?? null,
-                    'status' => 'available',
+                    'status' => MachinePart::STATUS_ASSEMBLED,
+                    'assembled_by' => auth()->id(),
+                    'assembled_at' => now(),
                 ]);
             }
         }
@@ -594,6 +626,8 @@ class MachineController extends Controller
                 'purpose'      => $data['purpose'] ?: null,
                 'remarks'      => $data['remarks'] ?: null,
                 'status'       => self::IMPORT_PART_STATUS,
+                'assembled_by' => auth()->id(),
+                'assembled_at' => now(),
             ]);
 
             $imported++;

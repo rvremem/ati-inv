@@ -53,6 +53,18 @@
                             @endforeach
                         </x-form-group>
                     </div>
+                    <div class="col-md-3">
+                        <x-form-group
+                            label="Hub"
+                            name="hub_id"
+                            type="select"
+                        >
+                            <option value="">-- Select Hub --</option>
+                            @foreach($hubs as $hub)
+                                <option value="{{ $hub->id }}" @selected(old('hub_id') == $hub->id)>{{ $hub->hub_name }}</option>
+                            @endforeach
+                        </x-form-group>
+                    </div>
                     <!-- <div class="col-md-3">
                         <x-form-group
                             label="Supplier"
@@ -124,15 +136,19 @@ document.getElementById('machineForm').addEventListener('submit', function(e) {
     e.preventDefault();
 
     if (!document.querySelector('input[name="serial_no"]').value) {
-        alert('Please enter serial number');
+        notify('Please enter serial number', 'warning');
         return;
     }
     if (!document.querySelector('input[name="description"]').value) {
-        alert('Please enter description');
+        notify('Please enter description', 'warning');
         return;
     }
 
     this.submit();
 });
 </script>
+@endsection
+
+@section('scripts')
+@include('partials.hub-locations')
 @endsection

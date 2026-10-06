@@ -22,6 +22,7 @@
                             <th>Quantity</th>
                             <th>Serial</th>
                             <th>Client</th>
+                            <th>Requestor</th>
                             <th>Pick-Up Date</th>
                             <th>Remarks</th>
                             <th>Actions</th>
@@ -35,6 +36,7 @@
                                 <td>{{ $req->quantity }}</td>
                                 <td>{{ $req->serial_no ?? '-' }}</td>
                                 <td>{{ $req->customer->name }}</td>
+                                <td>{{ $req->requestedBy->name ?? '-' }}</td>
                                 <td>{{ $req->pick_date->format('Y-m-d') }}</td>
                                 <td>{{ $req->remarks ?? '-' }}</td>
                                 <td>
@@ -71,6 +73,7 @@
                             <th>Description</th>
                             <th>Model</th>
                             <th>Client</th>
+                            <th>Requestor</th>
                             <th>Pick-Up Date</th>
                             <th>Purpose</th>
                             <th>Remarks</th>
@@ -84,6 +87,7 @@
                                 <td>{{ $req->machine->description }}</td>
                                 <td>{{ $req->machine->model ?? '-' }}</td>
                                 <td>{{ $req->customer->name }}</td>
+                                <td>{{ $req->requestedBy->name ?? '-' }}</td>
                                 <td>{{ $req->pick_date->format('Y-m-d') }}</td>
                                 <td>{{ $req->purpose ?? '-' }}</td>
                                 <td>{{ $req->remarks ?? '-' }}</td>
@@ -121,6 +125,8 @@
                             <th>Description</th>
                             <th>Serial No</th>
                             <th>Quantity</th>
+                            <th>Requestor</th>
+                            <th>Date Requested</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -132,6 +138,21 @@
                                 <td>{{ $mp->itemPart->description ?? '-' }}</td>
                                 <td>{{ $mp->serial_no ?? '-' }}</td>
                                 <td>{{ $mp->quantity }}</td>
+                                {{-- machine_parts.requested_by is nullable: rows requested
+                                     before that column existed have nobody to show. Same for
+                                     requested_at — hence the dash rather than a made-up date. --}}
+                                <td>{{ $mp->requestedBy->name ?? '-' }}</td>
+                                <td>
+                                    @if ($mp->requested_at)
+                                        {{-- Date to match the other tables; full timestamp on
+                                             hover, which separates same-day requests. --}}
+                                        <span title="{{ $mp->requested_at->format('Y-m-d H:i:s') }}">
+                                            {{ $mp->requested_at->format('Y-m-d') }}
+                                        </span>
+                                    @else
+                                        -
+                                    @endif
+                                </td>
                                 <td>
                                     <button type="button" class="btn btn-primary btn-sm mp-approve-btn"
                                         data-bs-toggle="modal" data-bs-target="#machinePartApproveModal"

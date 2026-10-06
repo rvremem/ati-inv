@@ -318,6 +318,46 @@
         .btn-secondary { background: #64748b; border-color: #64748b; color: #fff; }
         .btn-secondary:hover { background: #475569; border-color: #475569; color: #fff; }
 
+        /* Back navigation, used through the back-link component.
+           The component name is written without angle brackets on purpose:
+           Blade parses component tags even inside a CSS comment, and spelling
+           it out here compiled into a real, unclosed component call.
+
+           Deliberately quiet styling: leaving a page is never the action a
+           screen is there for, so it reads as an outline rather than competing
+           with the Save and Export buttons it shares a page with. */
+        .page-back {
+            margin-top: 32px;
+            padding-top: 20px;
+            border-top: 1px solid #eef0f3;
+        }
+
+        .btn-back {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: transparent;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 8px 18px;
+            font-size: 13.5px;
+            font-weight: 600;
+            color: #64748b;
+            text-decoration: none;
+            transition: border-color .15s, color .15s, background-color .15s;
+        }
+
+        .btn-back:hover {
+            background: #f8fafc;
+            border-color: #cbd5e1;
+            color: #0f172a;
+        }
+
+        .btn-back:focus-visible {
+            outline: 2px solid #4f46e5;
+            outline-offset: 2px;
+        }
+
         /* Forms */
         .form-label {
             font-size: 0.8rem;
@@ -493,6 +533,9 @@
     </style>
 
     @yield('styles')
+
+    {{-- In <head> so notify() exists before any page script can call it. --}}
+    @include('partials.notify')
 </head>
 <body>
     <!-- Navigation -->
@@ -552,8 +595,8 @@
                 @if(Auth::user()->role === 'Engineer')
                     {{-- Items is read-only for Engineers (no Actions column, no
                          Add Item, write endpoints 403) — see canManageItems(). --}}
-                    <li class="sidebar-section-label">Inventory</li>
-                    <li><a href="{{ route('inventory.items') }}" class="@if(request()->routeIs('inventory.items*')) active @endif"><span class="nav-icon"><i class="fas fa-boxes"></i></span> Items</a></li>
+                    <!-- <li class="sidebar-section-label">Inventory</li>
+                    <li><a href="{{ route('inventory.items') }}" class="@if(request()->routeIs('inventory.items*')) active @endif"><span class="nav-icon"><i class="fas fa-boxes"></i></span> Items</a></li> -->
 
                     <li class="sidebar-section-label">Outbound</li>
                     <li><a href="{{ route('requests.parts') }}" class="@if(request()->routeIs('requests.parts*')) active @endif"><span class="nav-icon"><i class="fas fa-hand-holding"></i></span> Request Parts</a></li>
@@ -587,6 +630,7 @@
                     <li><a href="{{ route('inventory.stocks') }}" class="@if(request()->routeIs('inventory.stocks')) active @endif"><span class="nav-icon"><i class="fas fa-layer-group"></i></span> Stock Levels</a></li>
                     <li><a href="{{ route('inventory.parts-location') }}" class="@if(request()->routeIs('inventory.parts-location*')) active @endif"><span class="nav-icon"><i class="fas fa-map-pin"></i></span> Parts Location</a></li>
                     <li><a href="{{ route('settings.customers') }}" class="@if(request()->routeIs('settings.customers*')) active @endif"><span class="nav-icon"><i class="fas fa-handshake"></i></span> Customers</a></li>
+                    <li><a href="{{ route('inventory.suppliers') }}" class="@if(request()->routeIs('inventory.suppliers*')) active @endif"><span class="nav-icon"><i class="fas fa-truck"></i></span> Suppliers</a></li>
 
                     <li class="sidebar-section-label">Inbound</li>
                     <li><a href="{{ route('receiving.items') }}" class="@if(request()->routeIs('receiving.items*')) active @endif"><span class="nav-icon"><i class="fas fa-download"></i></span> Receive Parts</a></li>

@@ -4,12 +4,30 @@
 
 @section('content')
 <div class="container-fluid">
-    <div class="mb-3">
-        <a href="{{ route('reports.index') }}" class="btn btn-secondary btn-sm">
-            <i class="fas fa-arrow-left"></i> Back
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+        <h2 class="mb-0">Request Status Report</h2>
+        {{-- Carries the filters currently applied, so the download matches
+             what is on screen rather than the whole report. --}}
+        <a href="{{ route('reports.request-status-csv', request()->only('hub_id')) }}" class="btn btn-outline-primary">
+            <i class="fas fa-file-csv"></i> Export CSV
         </a>
     </div>
-    <h2 class="mb-4">Request Status Report</h2>
+
+    {{-- This report had no filter form. The card is rendered only when there is
+         a hub filter to put in it, so a single-hub user is not shown an empty
+         toolbar. --}}
+    @if (auth()->user()?->hubScope() === null)
+        <div class="card mb-4">
+            <div class="card-body">
+                <form method="GET" action="{{ route('reports.request-status') }}" class="row g-3">
+                    <x-hub-filter />
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button type="submit" class="btn btn-primary w-100">Filter</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    @endif
 
     <!-- Summary Cards -->
     <div class="row g-3 mb-4">
@@ -79,5 +97,6 @@
             </table>
         </div>
     </div>
+    <x-back-link :href="route('reports.index')" />
 </div>
 @endsection

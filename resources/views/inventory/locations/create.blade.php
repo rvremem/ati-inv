@@ -32,6 +32,21 @@
                             help="Full location name"
                         />
 
+                        <x-form-group
+                            label="Hub"
+                            name="hub_id"
+                            type="select"
+                            required
+                            help="The branch this location is at. Receiving only offers a hub's own locations."
+                        >
+                            <option value="">-- Select Hub --</option>
+                            @foreach ($hubs as $hub)
+                                <option value="{{ $hub->id }}" @selected(old('hub_id') == $hub->id)>
+                                    {{ $hub->hub_name }}
+                                </option>
+                            @endforeach
+                        </x-form-group>
+
                         <div class="d-flex gap-2">
                             <button type="submit" class="btn btn-primary">
                                 <i class="fas fa-save"></i> Save

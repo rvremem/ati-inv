@@ -65,6 +65,20 @@
                             @endforeach
                         </x-form-group>
 
+                        <x-form-group
+                            label="Hub"
+                            name="hub_id"
+                            type="select"
+                            help="Leave blank for someone who oversees every branch."
+                        >
+                            <option value="">-- No hub --</option>
+                            @foreach ($hubs as $hub)
+                                <option value="{{ $hub->id }}" @selected(old('hub_id') == $hub->id)>
+                                    {{ $hub->hub_name }}
+                                </option>
+                            @endforeach
+                        </x-form-group>
+
                         <div class="d-flex gap-2">
                             <button type="submit" class="btn btn-primary">
                                 <i class="fas fa-save"></i> Create
