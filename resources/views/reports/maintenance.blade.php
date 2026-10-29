@@ -43,9 +43,9 @@
 $(function () {
     $('#maintenanceReportTable').DataTable(reportTableOptions(
         '{{ route('reports.maintenance-data') }}',
-        @json(request()->only(['customer_id'])),
+        {},
         [
-            { data: 'customer', orderable: false, render: esc },
+            { data: 'customer', render: esc },
             { data: 'po_no', render: esc },
             { data: 'serial_no', render: (d) => '<strong>' + esc(d) + '</strong>' },
             { data: 'description', render: esc },

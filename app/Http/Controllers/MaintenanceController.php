@@ -4,11 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Models\ActivityLog;
 use App\Models\MaintenanceContract;
-use App\Models\Customer;
 use App\Models\Location;
 use App\Http\Controllers\Concerns\ImportsCsv;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 
 class MaintenanceController extends Controller
 {
@@ -67,18 +67,10 @@ class MaintenanceController extends Controller
     {
         // Server-side DataTables endpoint: search + order + paginate in SQL,
         // returning only the current page of rows.
-        $orderColumns = [
-            'customers.name',
-            'maintenance_contracts.equipment_type',
-            'maintenance_contracts.serial_no',
-            'maintenance_contracts.start_date',
-            'maintenance_contracts.end_date',
-        ];
+        $orderColumns = ['customer', 'equipment_type', 'serial_no', 'start_date', 'end_date'];
         $now = now();
 
-        $base = MaintenanceContract::query()
-            ->leftJoin('customers', 'customers.id', '=', 'maintenance_contracts.customer_id')
-            ->select('maintenance_contracts.*', 'customers.name as client_name');
+        $base = MaintenanceContract::query();
 
         // Unfiltered total (before the search box is applied).
         $recordsTotal = MaintenanceContract::count();
@@ -86,11 +78,10 @@ class MaintenanceController extends Controller
         $search = trim((string) $request->input('search.value'));
         if ($search !== '') {
             $base->where(function ($q) use ($search) {
-                $q->where('customers.name', 'like', "%{$search}%");
-                foreach (['equipment_type', 'serial_no', 'brand', 'po_no', 'sites',
+                foreach (['customer', 'equipment_type', 'serial_no', 'brand', 'po_no', 'sites',
                           'company', 'branch', 'account_manager', 'description',
                           'location', 'remarks'] as $col) {
-                    $q->orWhere("maintenance_contracts.{$col}", 'like', "%{$search}%");
+                    $q->orWhere($col, 'like', "%{$search}%");
                 }
             });
         }
@@ -102,7 +93,7 @@ class MaintenanceController extends Controller
         if ($orderIdx !== null && isset($orderColumns[$orderIdx])) {
             $base->orderBy($orderColumns[$orderIdx], $orderDir);
         } else {
-            $base->orderBy('maintenance_contracts.end_date', 'asc');
+            $base->orderBy('end_date', 'asc');
         }
 
         $start = (int) $request->input('start', 0);
@@ -119,7 +110,7 @@ class MaintenanceController extends Controller
             $active = $c->is_active && $c->end_date && $c->end_date > $now;
             $expired = $c->end_date && $c->end_date <= $now;
             return [
-                'client' => $c->client_name,
+                'client' => $c->customer,
                 'equipment_type' => $c->equipment_type,
                 'serial_no' => $c->serial_no,
                 'start_date' => $c->start_date ? $c->start_date->format('M d, Y') : '-',
@@ -140,9 +131,8 @@ class MaintenanceController extends Controller
     public function create()
     {
         $this->authorizeManage();
-        $customers = Customer::where('is_active', true)->get();
         $locations = Location::where('is_active', true)->get();
-        return view('maintenance.create', compact('customers', 'locations'));
+        return view('maintenance.create', compact('locations'));
     }
 
     public function store(Request $request)
@@ -151,7 +141,7 @@ class MaintenanceController extends Controller
         $validated = $request->validate([
             'account_manager' => 'required',
             'equipment_type' => 'required',
-            'customer_id' => 'required|exists:customers,id',
+            'customer' => 'required|string|max:255',
             'po_no' => 'required',
             'sites' => 'required',
             'brand' => 'required',
@@ -173,9 +163,8 @@ class MaintenanceController extends Controller
     public function edit(MaintenanceContract $contract)
     {
         $this->authorizeManage();
-        $customers = Customer::where('is_active', true)->get();
         $locations = Location::where('is_active', true)->get();
-        return view('maintenance.edit', compact('contract', 'customers', 'locations'));
+        return view('maintenance.edit', compact('contract', 'locations'));
     }
 
     public function update(Request $request, MaintenanceContract $contract)
@@ -184,7 +173,7 @@ class MaintenanceController extends Controller
         $validated = $request->validate([
             'account_manager' => 'required',
             'equipment_type' => 'required',
-            'customer_id' => 'required|exists:customers,id',
+            'customer' => 'required|string|max:255',
             'po_no' => 'required',
             'sites' => 'required',
             'brand' => 'required',
@@ -247,7 +236,7 @@ class MaintenanceController extends Controller
         $this->authorizeManage();
 
         // Days Left and Status both derive from end_date, so they sort by it.
-        $orderColumns = ['customer_id', 'equipment_type', 'serial_no', 'po_no', 'start_date', 'end_date', 'end_date', 'end_date'];
+        $orderColumns = ['customer', 'equipment_type', 'serial_no', 'po_no', 'start_date', 'end_date', 'end_date', 'end_date'];
 
         $base = MaintenanceContract::query()->where('is_active', true);
         $recordsTotal = (clone $base)->count();
@@ -255,10 +244,9 @@ class MaintenanceController extends Controller
         $search = trim((string) $request->input('search.value'));
         if ($search !== '') {
             $base->where(function ($q) use ($search) {
-                foreach (['equipment_type', 'serial_no', 'po_no', 'brand', 'company'] as $col) {
+                foreach (['customer', 'equipment_type', 'serial_no', 'po_no', 'brand', 'company'] as $col) {
                     $q->orWhere($col, 'like', "%{$search}%");
                 }
-                $q->orWhereHas('customer', fn ($c) => $c->where('name', 'like', "%{$search}%"));
             });
         }
 
@@ -276,11 +264,11 @@ class MaintenanceController extends Controller
 
         $today = now()->startOfDay();
 
-        $data = $base->with('customer')->get()->map(function ($c) use ($today) {
+        $data = $base->get()->map(function ($c) use ($today) {
             $daysLeft = $c->end_date ? (int) $today->diffInDays($c->end_date, false) : null;
 
             return [
-                'client'     => $c->customer->name ?? '—',
+                'client'     => $c->customer ?: '—',
                 'equipment'  => $c->equipment_type ?? '—',
                 'serial_no'  => $c->serial_no ?? '—',
                 'po_no'      => $c->po_no ?? '—',
@@ -320,8 +308,7 @@ class MaintenanceController extends Controller
             $out = fopen('php://output', 'w');
             fputcsv($out, ['Customer', 'Equipment', 'Serial No', 'PO No', 'Start Date', 'End Date', 'Days Left', 'Status']);
 
-            $rows = MaintenanceContract::with('customer')
-                ->where('is_active', true)
+            $rows = MaintenanceContract::where('is_active', true)
                 ->orderBy('end_date', 'asc')
                 ->cursor();
 
@@ -332,7 +319,7 @@ class MaintenanceController extends Controller
                     : ($daysLeft < 0 ? 'Expired' : ($daysLeft <= 30 ? 'Expiring Soon' : 'Active'));
 
                 fputcsv($out, [
-                    $c->customer->name ?? '',
+                    $c->customer ?? '',
                     $c->equipment_type ?? '',
                     $c->serial_no ?? '',
                     $c->po_no ?? '',
@@ -354,44 +341,19 @@ class MaintenanceController extends Controller
         $this->authorizeManage();
         return view('maintenance.batch-upload', [
             'columns' => self::BATCH_COLUMNS,
-            'sampleRows' => $this->sampleRows(),
+            'sampleRows' => self::SAMPLE_ROWS,
         ]);
     }
 
     /**
-     * Sample rows with the 'customer' column swapped for names that actually
-     * exist. maintenance_contracts.customer_id is NOT NULL and is resolved from
-     * this name, so a template quoting a customer that isn't on record produces
-     * rows that silently fail to import.
-     */
-    private function sampleRows(): array
-    {
-        $names = Customer::where('is_active', true)
-            ->orderBy('name')
-            ->take(count(self::SAMPLE_ROWS))
-            ->pluck('name')
-            ->all();
-
-        $rows = self::SAMPLE_ROWS;
-        foreach ($rows as $i => $row) {
-            if (isset($names[$i])) {
-                // Index 2 is the 'customer' column in BATCH_COLUMNS.
-                $rows[$i][2] = $names[$i];
-            }
-        }
-
-        return $rows;
-    }
-
-    /**
      * Downloads a ready-to-fill CSV template: the header row plus two example
-     * rows. 'customer' is matched against the customer name on import.
+     * rows. 'customer' is stored as written — it is not looked up anywhere.
      */
     public function sampleCsv()
     {
         $this->authorizeManage();
 
-        return $this->streamCsv(self::BATCH_COLUMNS, $this->sampleRows(), 'maintenance_contracts_template.csv');
+        return $this->streamCsv(self::BATCH_COLUMNS, self::SAMPLE_ROWS, 'maintenance_contracts_template.csv');
     }
 
     /**
@@ -401,9 +363,36 @@ class MaintenanceController extends Controller
      * fail and reporting nothing useful.
      */
     private const REQUIRED_BATCH_FIELDS = [
-        'account_manager', 'equipment_type', 'po_no', 'sites', 'brand',
+        'account_manager', 'equipment_type', 'customer', 'po_no', 'sites', 'brand',
         'description', 'location', 'company', 'branch', 'serial_no', 'start_date',
     ];
+
+    /**
+     * Reads a date cell as YYYY-MM-DD or MM/DD/YYYY, nothing else.
+     *
+     * Carbon::parse() was too forgiving for a spreadsheet: it read 03/04/2026
+     * however it pleased and rolled 2026-02-30 over into March without a word,
+     * so a typo became a wrong expiry rather than a skipped row. MM/DD/YYYY is
+     * what Excel writes on a Philippine-locale PC.
+     */
+    private function parseCsvDate(string $value): ?Carbon
+    {
+        if (preg_match('/^(\d{4})-(\d{1,2})-(\d{1,2})$/', $value, $m)) {
+            [$year, $month, $day] = [(int) $m[1], (int) $m[2], (int) $m[3]];
+        } elseif (preg_match('#^(\d{1,2})/(\d{1,2})/(\d{4})$#', $value, $m)) {
+            [$month, $day, $year] = [(int) $m[1], (int) $m[2], (int) $m[3]];
+        } else {
+            return null;
+        }
+
+        return checkdate($month, $day, $year) ? Carbon::create($year, $month, $day)->startOfDay() : null;
+    }
+
+    /** serial_no + start date: the same equipment's cover for the same period. */
+    private function contractKey(string $serial, Carbon $start): string
+    {
+        return mb_strtolower(trim($serial)) . '|' . $start->format('Y-m-d');
+    }
 
     public function batchStore(Request $request)
     {
@@ -412,14 +401,16 @@ class MaintenanceController extends Controller
 
         [$header, $records] = $this->readCsv($request->file('csv_file'));
 
-        // customer_id is NOT NULL and is resolved from the name in the file, so
-        // an unmatched name is the single most common reason a row fails.
-        $customers = Customer::where('is_active', true)->get()
-            ->mapWithKeys(fn ($c) => [mb_strtolower(trim($c->name)) => $c->id]);
+        // A contract already on file for the same serial and start date is a
+        // re-upload, not a new contract. A renewal starts on a new date, so it
+        // still imports.
+        $onFile = MaintenanceContract::get(['serial_no', 'start_date'])
+            ->mapWithKeys(fn ($c) => [$this->contractKey($c->serial_no, $c->start_date) => true]);
 
         $imported = 0;
         $skipped = 0;
         $reasons = [];
+        $importedLabels = [];
 
         foreach ($records as $i => $row) {
             $line = $i + 2; // +1 for the header, +1 because humans count from 1
@@ -446,33 +437,51 @@ class MaintenanceController extends Controller
             // to whoever has to fix the spreadsheet.
             $label = $data['po_no'];
 
-            $customerId = $customers->get(mb_strtolower($data['customer']));
-            if (! $customerId) {
+            $start = $this->parseCsvDate($data['start_date']);
+            if (! $start) {
                 $skipped++;
-                $reasons[] = "{$label}: customer '" . ($data['customer'] ?: '(blank)') . "' is not an active customer";
+                $reasons[] = "{$label}: start_date '{$data['start_date']}' is not a valid YYYY-MM-DD or MM/DD/YYYY date";
                 continue;
             }
 
-            try {
-                $start = Carbon::parse($data['start_date']);
-            } catch (\Throwable $e) {
+            if ($data['coverage_months'] !== '' && ! ctype_digit($data['coverage_months'])) {
                 $skipped++;
-                $reasons[] = "{$label}: start_date '{$data['start_date']}' is not a date";
+                $reasons[] = "{$label}: coverage_months '{$data['coverage_months']}' is not a whole number";
                 continue;
             }
 
-            $months = ctype_digit($data['coverage_months']) ? (int) $data['coverage_months'] : 0;
+            $months = $data['coverage_months'] !== '' ? (int) $data['coverage_months'] : null;
 
-            // Blank end_date is derived from the start date, as the upload page
-            // promises — it used to be counted from today instead, which put the
-            // expiry in the wrong place for any backdated contract.
-            try {
-                $end = $data['end_date'] !== ''
-                    ? Carbon::parse($data['end_date'])
-                    : $start->copy()->addMonths($months ?: 12);
-            } catch (\Throwable $e) {
+            if ($data['end_date'] !== '') {
+                $end = $this->parseCsvDate($data['end_date']);
+                if (! $end) {
+                    $skipped++;
+                    $reasons[] = "{$label}: end_date '{$data['end_date']}' is not a valid YYYY-MM-DD or MM/DD/YYYY date";
+                    continue;
+                }
+            } else {
+                // Blank end_date runs from the start date, never from today —
+                // a backdated contract would otherwise expire in the wrong place.
+                $end = $start->copy()->addMonths($months ?: 12);
+            }
+
+            // Same rule as the New Contract form (after:start_date). Without it
+            // a swapped pair of dates imports as a contract that is already
+            // expired on the day it is loaded.
+            if ($end->lte($start)) {
                 $skipped++;
-                $reasons[] = "{$label}: end_date '{$data['end_date']}' is not a date";
+                $reasons[] = "{$label}: end_date must be after start_date";
+                continue;
+            }
+
+            // Blank coverage is read off the two dates, so the months shown on
+            // the contract agree with when it actually ends.
+            $months ??= (int) round($start->diffInMonths($end));
+
+            $key = $this->contractKey($data['serial_no'], $start);
+            if ($onFile->has($key)) {
+                $skipped++;
+                $reasons[] = "{$label}: serial {$data['serial_no']} already has a contract starting {$start->format('Y-m-d')}";
                 continue;
             }
 
@@ -480,7 +489,7 @@ class MaintenanceController extends Controller
                 MaintenanceContract::create([
                     'account_manager' => $data['account_manager'],
                     'equipment_type' => $data['equipment_type'],
-                    'customer_id' => $customerId,
+                    'customer' => $data['customer'],
                     'po_no' => $data['po_no'],
                     'sites' => $data['sites'],
                     'brand' => $data['brand'],
@@ -494,6 +503,9 @@ class MaintenanceController extends Controller
                     'end_date' => $end,
                     'remarks' => $data['remarks'] ?: null,
                 ]);
+                // So the same row twice in one file is caught as well.
+                $onFile->put($key, true);
+                $importedLabels[] = "{$data['po_no']}/{$data['serial_no']}";
                 $imported++;
             } catch (\Throwable $e) {
                 $skipped++;
@@ -501,9 +513,15 @@ class MaintenanceController extends Controller
             }
         }
 
+        // remarks is a 255-character column, so the PO/serial list is cut to
+        // fit rather than letting a large file fail the log write.
         ActivityLog::log(
             'Batch Uploaded Maintenance Contracts',
-            "{$imported} contract(s) imported, {$skipped} skipped"
+            Str::limit(
+                "{$imported} contract(s) imported, {$skipped} skipped"
+                . ($importedLabels !== [] ? ': ' . implode(', ', $importedLabels) : ''),
+                252
+            )
         );
 
         return redirect()->route('maintenance.index')

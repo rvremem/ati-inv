@@ -15,9 +15,12 @@ class MaintenanceContract extends Model
      * to service, so restricting the list by branch would hide cover that the
      * engineer standing in front of the machine needs to see. Defective stock
      * is head-office-only; this is not.
+     *
+     * 'customer' is the client's name as written, not a link to the Customers
+     * table — see the 2026_10_29_000002 migration.
      */
     protected $fillable = [
-        'account_manager', 'equipment_type', 'customer_id', 'po_no', 'sites',
+        'account_manager', 'equipment_type', 'customer', 'po_no', 'sites',
         'brand', 'description', 'location', 'company', 'branch', 'serial_no',
         'coverage_months', 'start_date', 'end_date', 'remarks', 'is_active'
     ];
@@ -27,9 +30,4 @@ class MaintenanceContract extends Model
         'start_date' => 'date',
         'end_date' => 'date',
     ];
-
-    public function customer()
-    {
-        return $this->belongsTo(Customer::class);
-    }
 }

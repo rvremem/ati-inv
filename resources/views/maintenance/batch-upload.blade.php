@@ -21,10 +21,11 @@
                                 <h6>CSV Format Required:</h6>
                                 <p class="mb-2 small">{{ implode(', ', $columns) }}</p>
                                 <p class="mb-0 small text-muted">
-                                    One row per contract. <strong>customer</strong> is matched by name against
-                                    the Customers list. Everything except <strong>end_date</strong> and
-                                    <strong>remarks</strong> is required. Columns you don't need can be dropped
-                                    from the file entirely &mdash; only the header names are read.
+                                    One row per contract. <strong>customer</strong> is saved exactly as typed.
+                                    Everything except <strong>coverage_months</strong>, <strong>end_date</strong>
+                                    and <strong>remarks</strong> is required. Dates are
+                                    <strong>YYYY-MM-DD</strong> or <strong>MM/DD/YYYY</strong>. Only the header
+                                    names are read, so column order doesn't matter.
                                 </p>
                             </div>
                             <a href="{{ route('maintenance.sample-csv') }}" class="btn btn-sm btn-outline-primary flex-shrink-0 ms-3">
@@ -56,19 +57,26 @@
                             <strong>Before you upload:</strong>
                             <ul class="mb-0 small mt-2">
                                 <li>
-                                    A <code>customer</code> that doesn't match an <strong>active</strong> customer
-                                    by name is skipped &mdash; unlike suppliers on the item import, customers are
-                                    not created for you. Add them under Customers first.
+                                    <code>customer</code> is plain text. It is not checked against the Customers
+                                    list, so spell it consistently.
                                 </li>
                                 <li>
                                     If <code>end_date</code> is blank it is calculated from
                                     <code>start_date</code> plus <code>coverage_months</code>, falling back to 12
-                                    months when no coverage is given.
+                                    months when no coverage is given. If <code>coverage_months</code> is blank it is
+                                    worked out from the two dates.
                                 </li>
                                 <li>
-                                    Rows with a missing required field, an unmatched customer, an unreadable date,
-                                    or the wrong number of columns are skipped and reported back with the reason.
-                                    The rest still import.
+                                    <strong>A contract with the same <code>serial_no</code> and
+                                    <code>start_date</code> as one already on file is skipped</strong>, so uploading
+                                    the same file twice does not create duplicates. A renewal with a new start date
+                                    still imports.
+                                </li>
+                                <li>
+                                    Rows with a missing required field, an invalid date (e.g. Feb 30), an
+                                    <code>end_date</code> on or before <code>start_date</code>, a non-numeric
+                                    <code>coverage_months</code>, or the wrong number of columns are skipped and
+                                    reported back with the reason. The rest still import.
                                 </li>
                                 <li>
                                     This upload only ever <strong>creates</strong> contracts &mdash; it never edits

@@ -339,7 +339,7 @@
                 <tbody>
                     @forelse($expiring_contracts as $c)
                         <tr>
-                            <td class="pn">{{ Str::limit($c->customer->name ?? ($c->customer->name ?? $c->company) ?? '—', 40) }}</td>
+                            <td class="pn">{{ Str::limit($c->customer ?: ($c->company ?: '—'), 40) }}</td>
                             <td class="mono">{{ $c->serial_no ?? '—' }}</td>
                             <td class="mono">{{ $c->end_date ? $c->end_date->format('M d, Y') : '—' }}</td>
                             <td><span class="pill {{ $c->days_left <= 14 ? 'crit' : 'warn' }}">{{ $c->days_left }} day{{ $c->days_left == 1 ? '' : 's' }}</span></td>

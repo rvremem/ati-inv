@@ -844,12 +844,9 @@ class ReportController extends Controller
 
     public function maintenanceData(Request $request)
     {
-        $orderColumns = [null, 'po_no', 'serial_no', 'description', 'brand', 'coverage_months', 'start_date', 'end_date', 'is_active'];
+        $orderColumns = ['customer', 'po_no', 'serial_no', 'description', 'brand', 'coverage_months', 'start_date', 'end_date', 'is_active'];
 
-        $base = MaintenanceContract::query()->with('customer')->where('is_active', true);
-        if ($request->filled('customer_id')) {
-            $base->where('customer_id', $request->input('customer_id'));
-        }
+        $base = MaintenanceContract::query()->where('is_active', true);
 
         return $this->dataTableJson(
             $request,
@@ -861,13 +858,13 @@ class ReportController extends Controller
                       ->orWhere('serial_no', 'like', "%{$search}%")
                       ->orWhere('description', 'like', "%{$search}%")
                       ->orWhere('brand', 'like', "%{$search}%")
-                      ->orWhereHas('customer', fn ($c) => $c->where('name', 'like', "%{$search}%"));
+                      ->orWhere('customer', 'like', "%{$search}%");
                 });
             },
             'end_date',
             'asc',
             fn ($c) => [
-                'customer' => $c->customer->name ?? '-',
+                'customer' => $c->customer ?: '-',
                 'po_no' => $c->po_no ?? '-',
                 'serial_no' => $c->serial_no ?? '-',
                 'description' => $c->description ?? '-',

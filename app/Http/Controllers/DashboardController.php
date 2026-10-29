@@ -172,8 +172,7 @@ class DashboardController extends Controller
         $today = now()->startOfDay();
         $limit = now()->addDays(30)->endOfDay();
 
-        return MaintenanceContract::with('customer')
-            ->where('is_active', true)
+        return MaintenanceContract::where('is_active', true)
             ->whereNotNull('end_date')
             ->whereBetween('end_date', [$today, $limit])
             ->orderBy('end_date')

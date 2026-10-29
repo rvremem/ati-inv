@@ -40,16 +40,11 @@
 
                         <x-form-group
                             label="Customer"
-                            name="customer_id"
-                            type="select"
+                            name="customer"
+                            type="text"
+                            :value="$contract->customer"
                             required
-                        >
-                            @foreach ($customers as $cust)
-                                <option value="{{ $cust->id }}" @selected(old('customer_id', $contract->customer_id) == $cust->id)>
-                                    {{ $cust->name }}
-                                </option>
-                            @endforeach
-                        </x-form-group>
+                        />
 
                         <div class="row">
                             <div class="col-md-6">
