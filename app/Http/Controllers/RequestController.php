@@ -10,6 +10,11 @@ use App\Models\Machine;
 use App\Models\MachinePart;
 use App\Models\Location;
 use App\Models\Customer;
+use App\Models\Role;
+use App\Models\User;
+use App\Notifications\NewRequestSubmitted;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Http\Request;
 
 class RequestController extends Controller
@@ -123,6 +128,7 @@ class RequestController extends Controller
             return back()->withInput()->withErrors(['quantity' => $errors]);
         }
         $customerName = Customer::find($validated['customer_id'])?->name ?? '-';
+        $emailRows = [];
 
         foreach ($items as $index => $itemId) {
             // One serial is one unit. The form locks the field at 1, but that
@@ -145,13 +151,25 @@ class RequestController extends Controller
 
             // One entry per item, not one summary: "3 item(s)" named nothing
             // that could be traced back to a part or a serial.
-            ActivityLog::log('Requested Item', sprintf(
+            $summary = sprintf(
                 'Item No: %s | %s | Customer: %s',
                 $partNos[$itemId] ?? "ID {$itemId}",
                 ActivityLog::unitLabel($serial, (int) $quantities[$index]),
                 $customerName
-            ));
+            );
+            ActivityLog::log('Requested Item', $summary);
+            $emailRows[] = [
+                $partNos[$itemId] ?? "ID {$itemId}",
+                $serial ?? '-',
+                $quantities[$index],
+                ($itemRemarks[$index] ?? null) ?: '-',
+            ];
         }
+
+        $this->notifyApprovers('Part', ['Item No', 'Serial', 'Qty', 'Remarks'], $emailRows, [
+            'Customer' => $customerName,
+            'Pick Date' => $validated['pick_date'],
+        ]);
 
         return redirect()->route('requests.parts')->with('success', 'Part request created successfully.');
     }
@@ -238,14 +256,27 @@ class RequestController extends Controller
         $machine?->update(['status' => 'Pending']);
 
         // purpose is nullable on the form, hence the fallback.
+        $customerName = Customer::find($validated['customer_id'])?->name ?? '-';
+        // ?? as well as ?: — validate() omits a nullable key entirely when
+        // the field isn't submitted, so reading it directly can throw.
+        $purpose = ($validated['purpose'] ?? null) ?: '-';
+
         ActivityLog::log('Requested Machine', sprintf(
             'Serial: %s | Customer: %s | Purpose: %s',
             $machine->serial_no,
-            Customer::find($validated['customer_id'])?->name ?? '-',
-            // ?? as well as ?: — validate() omits a nullable key entirely when
-            // the field isn't submitted, so reading it directly can throw.
-            ($validated['purpose'] ?? null) ?: '-'
+            $customerName,
+            $purpose
         ));
+
+        $this->notifyApprovers('Machine', ['Serial', 'Model', 'Purpose', 'Remarks'], [[
+            $machine->serial_no,
+            $machine->model ?? '-',
+            $purpose,
+            ($validated['remarks'] ?? null) ?: '-',
+        ]], [
+            'Customer' => $customerName,
+            'Pick Date' => $validated['pick_date'],
+        ]);
 
         return redirect()->route('requests.machines')->with('success', 'Machine request created successfully.');
     }
@@ -352,6 +383,7 @@ class RequestController extends Controller
             ->whereIn('id', $validated['machine_part_id'])
             ->get()
             ->keyBy('id');
+        $emailRows = [];
 
         foreach ($validated['machine_part_id'] as $index => $machinePartId) {
             $requestRemark = trim((string) ($validated['item_remarks'][$index] ?? '')) ?: null;
@@ -376,14 +408,27 @@ class RequestController extends Controller
             // question from why it is being pulled.
             $part = $parts->get($machinePartId);
 
-            ActivityLog::log('Requested Machine Part', sprintf(
+            $summary = sprintf(
                 'Item No: %s | %s | Machine: %s | Remarks: %s',
                 $part?->itemPart?->part_no ?? "ID {$machinePartId}",
                 ActivityLog::unitLabel($part?->serial_no, (int) ($validated['quantity'][$index] ?? 1)),
                 $part?->machine?->serial_no ?? '-',
                 $requestRemark ?: '-'
-            ));
+            );
+            ActivityLog::log('Requested Machine Part', $summary);
+            $emailRows[] = [
+                $part?->itemPart?->part_no ?? "ID {$machinePartId}",
+                $part?->serial_no ?: '-',
+                $validated['quantity'][$index] ?? 1,
+                $part?->machine?->serial_no ?? '-',
+                $requestRemark ?: '-',
+            ];
         }
+
+        $this->notifyApprovers('Machine Part', ['Item No', 'Serial', 'Qty', 'Machine', 'Remarks'], $emailRows, [
+            'Customer' => Customer::find($validated['customer_id'])?->name ?? '-',
+            'Pick Date' => $validated['pick_date'],
+        ]);
 
         return redirect()->route('requests.machine-parts')->with('success', 'Machine part request submitted successfully.');
     }
@@ -480,6 +525,36 @@ class RequestController extends Controller
         ));
 
         return redirect()->route('requests.pending')->with('success', 'Machine request declined successfully.');
+    }
+
+    /**
+     * Email every active Developer, Admin and SA that a request is waiting.
+     * The request is already saved by now, so a mail failure (SMTP down, bad
+     * credentials) is logged rather than thrown — it must not turn a
+     * successful submission into an error page.
+     */
+    private function notifyApprovers(string $type, array $headers, array $rows, array $details = []): void
+    {
+        if (! $rows) {
+            return;
+        }
+
+        $roleIds = array_filter(array_map([Role::class, 'idForCode'], ['Developer', 'Admin', 'SA']));
+
+        $recipients = User::whereIn('role_id', $roleIds)
+            ->where('is_active', true)
+            ->whereNotNull('email')
+            ->get();
+
+        if ($recipients->isEmpty()) {
+            return;
+        }
+
+        try {
+            Notification::send($recipients, new NewRequestSubmitted($type, auth()->user(), $headers, $rows, $details));
+        } catch (\Throwable $e) {
+            Log::error("Request notification email failed: {$e->getMessage()}");
+        }
     }
 
     public function myRequests()
