@@ -349,13 +349,22 @@ class ReportController extends Controller
                 ->where('created_at', '<=', $asOf)
                 ->sum('quantity');
 
+            // Backfilled stock that was already on the shelf — on hand, per
+            // InventoryController::ON_HAND_STATUSES. Leaving it out reported
+            // every part entered by batch upload as zero.
+            $item->old_qty = (int) $this->hubScopedReceiving($hubId)
+                ->where('item_part_id', $item->id)
+                ->where('status', 'Old Stock')
+                ->where('created_at', '<=', $asOf)
+                ->sum('quantity');
+
             $item->out_qty = (int) $this->hubScopedRequests($hubId)
                 ->where('item_part_id', $item->id)
                 ->where('status', 'Out')
                 ->where('created_at', '<=', $asOf)
                 ->sum('quantity');
 
-            $item->on_hand = ($item->receiving_qty + $item->return_qty) - $item->out_qty;
+            $item->on_hand = ($item->receiving_qty + $item->return_qty + $item->old_qty) - $item->out_qty;
 
             return $item;
         });
@@ -415,7 +424,7 @@ class ReportController extends Controller
         $items->transform(function ($item) use ($asOf, $hubId) {
             $received = (int) $this->hubScopedReceiving($hubId)
                 ->where('item_part_id', $item->id)
-                ->whereIn('status', ['Receiving', 'Return'])
+                ->whereIn('status', InventoryController::ON_HAND_STATUSES)
                 ->where('created_at', '<=', $asOf)
                 ->sum('quantity');
 
