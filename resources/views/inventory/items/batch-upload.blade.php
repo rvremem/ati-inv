@@ -141,6 +141,25 @@
                                     what the filtered dropdown enforces on screen.
                                 </li>
                                 <li>
+                                    <strong>Same shelf code at another hub:</strong> location codes are unique across
+                                    all hubs, so when a code such as <code>R2AL1</code> already belongs to another hub,
+                                    the row's hub is put in front &mdash; <code>R2AL1</code> at Cebu becomes
+                                    <code>CEBU-R2AL1</code>.
+                                </li>
+                                <li>
+                                    <strong>Serials on a non-serialised part:</strong> if the file gives a real serial
+                                    for a part that Item Parts marks as not serialised, the part is
+                                    <strong>switched to serialised</strong> and all of its rows are read as serial
+                                    units. Its rows without a serial then need <code>N/A</code>. Switched parts are
+                                    listed in the result message.
+                                </li>
+                                <li>
+                                    <strong>Several clients in one cell</strong> (e.g.
+                                    <code>Araneta Center Inc.,CTBC Bank Corp.</code>): a receiving row has one client,
+                                    so the row is saved to <code>Automated Technologies Inc.</code> and the list is kept
+                                    in remarks as <code>Clients: &hellip;</code>.
+                                </li>
+                                <li>
                                     <strong>Watch location spellings:</strong> a typo such as <code>A-01</code>
                                     instead of <code>A01</code> creates a new location instead of failing the row.
                                     New ones are listed in the result message. A location that exists but is

@@ -268,7 +268,7 @@ class InventoryController extends Controller
      *   serials are kept unique across every part.
      * - Non-serialised part: a blank quantity counts as 1. Rows for the same
      *   part going to the same place (hub, location, PO, client) are summed
-     *   into a single receipt, so two bare rows make qty 2. serial_no must be
+     *   into a single receipt, so two bare rows make qty 2. serial_no is
      *   blank or N/A.
      *
      * Required on every row: part_no, hub, location, and serial_no for a
@@ -287,7 +287,12 @@ class InventoryController extends Controller
      * behind.
      *
      * @param  array<string, array{id:int, is_serialized:bool, supplier_id:?int}>  $newParts  keyed by lower-cased part_no
-     * @return array{serials:int, quantity_lines:int, quantity_units:int, skipped:int, reasons:array, created_locations:array<int,string>, created_customers:array<int,string>}
+     * A part not marked serialised that the file gives real serials for is
+     * switched to serialised. A location code already used at another hub is
+     * prefixed with the row's hub (CEBU-R2AL1). A client cell listing several
+     * clients goes to BATCH_DEFAULT_CLIENT with the list kept in remarks.
+     *
+     * @return array{serials:int, quantity_lines:int, quantity_units:int, skipped:int, reasons:array, created_locations:array<int,string>, created_customers:array<int,string>, switched_parts:array<int,string>}
      */
     private function importItemStockRows(UploadedFile $file, array $newParts): array
     {
@@ -309,13 +314,36 @@ class InventoryController extends Controller
         $customers = Customer::get()
             ->mapWithKeys(fn($c) => [mb_strtolower(trim($c->name)) => $c->id]);
 
-        $hubs = Hub::get()
-            ->mapWithKeys(fn($h) => [mb_strtolower(trim($h->hub_name)) => $h->id]);
+        $hubRows = Hub::get();
+        $hubs = $hubRows->mapWithKeys(fn($h) => [mb_strtolower(trim($h->hub_name)) => $h->id]);
+        // For the hub prefix a clashing location code gets, e.g. CEBU-R2AL1.
+        $hubPrefixes = $hubRows->mapWithKeys(fn($h) => [
+            $h->id => mb_strtoupper(preg_replace('/\s+/', '', trim($h->hub_name))),
+        ]);
 
         // Serials already booked in. A serial identifies one physical unit, so
         // re-importing one would double-count that unit in Stock Levels.
         $onFile = DB::table('receiving')->whereNotNull('serial_no')
             ->pluck('serial_no')->map(fn($x) => mb_strtolower(trim((string) $x)))->flip();
+
+        $noSerialKey = mb_strtolower(self::BATCH_NO_SERIAL);
+
+        // Parts the sheet gives a real serial on at least one row. A part not
+        // yet marked serialised is switched over when first reached (see
+        // below), so the decision holds for all of its rows whatever their
+        // order in the file.
+        $serialisedInFile = [];
+        foreach ($records as $row) {
+            $data = $this->rowToPayload($header, $row, self::ITEM_STOCK_BATCH_COLUMNS);
+            $serialKey = mb_strtolower(trim($data['serial_no'] ?? ''));
+
+            if ($data !== null && $serialKey !== '' && $serialKey !== $noSerialKey) {
+                $serialisedInFile[mb_strtolower(trim($data['part_no']))] = true;
+            }
+        }
+
+        // Resolved parts, so each is looked up (and possibly switched) once.
+        $partCache = $newParts;
 
         // Next free N/A-n. The loop at the point of use also steps over any
         // number already taken, in case a gap was filled by hand.
@@ -323,8 +351,6 @@ class InventoryController extends Controller
             ->pluck('serial_no')
             ->map(fn($s) => (int) substr((string) $s, strlen(self::BATCH_NO_SERIAL) + 1))
             ->max() + 1;
-
-        $noSerialKey = mb_strtolower(self::BATCH_NO_SERIAL);
 
         // A restricted user files everything against their own branch whatever
         // the sheet says, the same clamp the Receive Parts form applies.
@@ -337,6 +363,7 @@ class InventoryController extends Controller
         $reasons = [];
         $createdLocations = [];
         $createdCustomers = [];
+        $switchedParts = [];
 
         foreach ($records as $i => $row) {
             $line = $i + 2;
@@ -360,7 +387,7 @@ class InventoryController extends Controller
             $label = "{$partNo} (line {$line})";
 
             // A part from this upload first, then the existing catalogue.
-            $part = $newParts[$partKey] ?? null;
+            $part = $partCache[$partKey] ?? null;
 
             if (! $part) {
                 $existing = ItemPart::whereRaw('LOWER(part_no) = ?', [$partKey])
@@ -378,6 +405,22 @@ class InventoryController extends Controller
                     'supplier_id' => $existing->supplier_id,
                 ];
             }
+
+            // The sheet has serials for this part, so it is serialised: the
+            // catalogue flag is switched to match rather than the rows refused.
+            if (! $part['is_serialized'] && isset($serialisedInFile[$partKey])) {
+                ItemPart::whereKey($part['id'])->update(['is_serialized' => true]);
+
+                ActivityLog::log(
+                    'Updated Item',
+                    "Item No: {$partNo} | marked serialised by an item stock import (the file lists serials for it)"
+                );
+
+                $part['is_serialized'] = true;
+                $switchedParts[] = $partNo;
+            }
+
+            $partCache[$partKey] = $part;
 
             $serial = trim($data['serial_no'] ?? '');
             $serialKey = mb_strtolower($serial);
@@ -409,14 +452,8 @@ class InventoryController extends Controller
                     }
                 }
             } else {
-                // Refused rather than quietly dropped: Stock Levels counts a
-                // non-serialised part by quantity, so a serial against one
-                // would never show up as the unit it claims to be.
-                if ($serial !== '' && ! $noSerial) {
-                    $skipped++;
-                    $reasons[] = "{$label}: '{$partNo}' is not a serialised part — leave serial_no blank";
-                    continue;
-                }
+                // A real serial here cannot happen: such a part was switched
+                // to serialised above. N/A is ignored.
 
                 // Blank counts as 1, so two bare rows of a part make qty 2.
                 $qtyRaw = trim($data['quantity'] ?? '');
@@ -471,6 +508,16 @@ class InventoryController extends Controller
             $locationKey = mb_strtolower($locationCode);
             $location = $locations->get($locationKey);
 
+            // locations.code is unique across every hub, so the same shelf
+            // name used at another branch cannot be created twice. The row's
+            // hub is put in front instead — R2AL1 at Cebu becomes CEBU-R2AL1 —
+            // which keeps the stock at the branch the row names.
+            if ($location && (int) $location['hub_id'] !== (int) $hubId) {
+                $locationCode = ($hubPrefixes[$hubId] ?? $hubId) . '-' . $locationCode;
+                $locationKey = mb_strtolower($locationCode);
+                $location = $locations->get($locationKey);
+            }
+
             if ($location) {
                 if (! $location['is_active']) {
                     $skipped++;
@@ -478,9 +525,8 @@ class InventoryController extends Controller
                     continue;
                 }
 
-                // The shelf must be at the branch the row names. Receiving into
-                // Cebu onto a Manila shelf is what the form's filtered dropdown
-                // prevents, and a spreadsheet has no dropdown.
+                // Only reachable if even the hub-prefixed code belongs to
+                // another branch, i.e. someone created it there by hand.
                 if ((int) $location['hub_id'] !== (int) $hubId) {
                     $skipped++;
                     $reasons[] = "{$label}: location '{$locationCode}' is not in that hub";
@@ -498,7 +544,16 @@ class InventoryController extends Controller
             // trade-off as the items file's supplier: a typo becomes a new
             // entry to merge by hand. Placed after every check that can skip
             // the row, so a skipped row never leaves a stray client behind.
+            // A cell listing several clients ("A Inc.,B Corp.") cannot be one
+            // client on a receiving row: it goes to the default client, and
+            // the list is kept in remarks so it is not lost.
             $client = trim($data['client'] ?? '') ?: self::BATCH_DEFAULT_CLIENT;
+            $remarks = ($data['remarks'] ?? '') ?: null;
+
+            if (str_contains($client, ',')) {
+                $remarks = ($remarks !== null ? "{$remarks}; " : '') . "Clients: {$client}";
+                $client = self::BATCH_DEFAULT_CLIENT;
+            }
 
             try {
                 $customerId = $this->findOrCreateByName(
@@ -541,7 +596,6 @@ class InventoryController extends Controller
             }
 
             $atiPo = ($data['ati_po'] ?? '') ?: null;
-            $remarks = ($data['remarks'] ?? '') ?: null;
 
             // Non-serialised: held back and summed with any other row bound for
             // the same receipt; written once the whole file has been read.
@@ -641,6 +695,7 @@ class InventoryController extends Controller
             'reasons' => $reasons,
             'created_locations' => $createdLocations,
             'created_customers' => $createdCustomers,
+            'switched_parts' => $switchedParts,
         ];
     }
 
@@ -873,7 +928,7 @@ class InventoryController extends Controller
                 ? $this->importItemStockRows($stockFile, $items['parts'])
                 : [
                     'serials' => 0, 'quantity_lines' => 0, 'quantity_units' => 0, 'skipped' => 0, 'reasons' => [],
-                    'created_locations' => [], 'created_customers' => [],
+                    'created_locations' => [], 'created_customers' => [], 'switched_parts' => [],
                 ];
 
             return [$items, $stock];
@@ -905,6 +960,11 @@ class InventoryController extends Controller
                     ? count($createdCustomers) . ' new client(s) created: '
                         . implode(', ', array_slice($createdCustomers, 0, 5))
                         . (count($createdCustomers) > 5 ? ', …' : '') . '. '
+                    : '')
+                . (! empty($stock['switched_parts'])
+                    ? count($stock['switched_parts']) . ' part(s) marked serialised because the file lists serials for them: '
+                        . implode(', ', array_slice($stock['switched_parts'], 0, 5))
+                        . (count($stock['switched_parts']) > 5 ? ', …' : '') . '. '
                     : '')
                 . ($stock['serials'] > 0 ? "{$stock['serials']} serial(s) received into stock. " : '')
                 . ($stock['quantity_lines'] > 0
