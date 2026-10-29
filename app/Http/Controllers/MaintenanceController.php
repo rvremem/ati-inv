@@ -388,12 +388,15 @@ class MaintenanceController extends Controller
         return checkdate($month, $day, $year) ? Carbon::create($year, $month, $day)->startOfDay() : null;
     }
 
-    /** serial_no + start date: the same equipment's cover for the same period. */
-    private function contractKey(string $serial, Carbon $start): string
-    {
-        return mb_strtolower(trim($serial)) . '|' . $start->format('Y-m-d');
-    }
-
+    /**
+     * A serial already under contract is a renewal, not a new contract: the
+     * file row overwrites what is on file instead of adding a second row.
+     *
+     * Every contract on file for the serial is updated, so rows duplicated by
+     * earlier uploads come out agreeing with each other. A row with the same
+     * dates as the one on file is a re-upload and changes nothing; a row that
+     * starts before it is an older spreadsheet and would roll the renewal back.
+     */
     public function batchStore(Request $request)
     {
         $this->authorizeManage();
@@ -401,16 +404,16 @@ class MaintenanceController extends Controller
 
         [$header, $records] = $this->readCsv($request->file('csv_file'));
 
-        // A contract already on file for the same serial and start date is a
-        // re-upload, not a new contract. A renewal starts on a new date, so it
-        // still imports.
-        $onFile = MaintenanceContract::get(['serial_no', 'start_date'])
-            ->mapWithKeys(fn ($c) => [$this->contractKey($c->serial_no, $c->start_date) => true]);
+        $bySerial = MaintenanceContract::orderBy('id')->get()
+            ->groupBy(fn ($c) => mb_strtolower(trim($c->serial_no)));
 
         $imported = 0;
+        $renewed = 0;
+        $rowsUpdated = 0;
         $skipped = 0;
         $reasons = [];
         $importedLabels = [];
+        $renewedLabels = [];
 
         foreach ($records as $i => $row) {
             $line = $i + 2; // +1 for the header, +1 because humans count from 1
@@ -478,33 +481,65 @@ class MaintenanceController extends Controller
             // the contract agree with when it actually ends.
             $months ??= (int) round($start->diffInMonths($end));
 
-            $key = $this->contractKey($data['serial_no'], $start);
-            if ($onFile->has($key)) {
-                $skipped++;
-                $reasons[] = "{$label}: serial {$data['serial_no']} already has a contract starting {$start->format('Y-m-d')}";
-                continue;
-            }
+            $payload = [
+                'account_manager' => $data['account_manager'],
+                'equipment_type' => $data['equipment_type'],
+                'customer' => $data['customer'],
+                'po_no' => $data['po_no'],
+                'sites' => $data['sites'],
+                'brand' => $data['brand'],
+                'description' => $data['description'],
+                'location' => $data['location'],
+                'company' => $data['company'],
+                'branch' => $data['branch'],
+                'serial_no' => $data['serial_no'],
+                'coverage_months' => $months,
+                'start_date' => $start,
+                'end_date' => $end,
+                'remarks' => $data['remarks'] ?: null,
+            ];
+
+            $serialKey = mb_strtolower($data['serial_no']);
+            $existing = $bySerial->get($serialKey);
 
             try {
-                MaintenanceContract::create([
-                    'account_manager' => $data['account_manager'],
-                    'equipment_type' => $data['equipment_type'],
-                    'customer' => $data['customer'],
-                    'po_no' => $data['po_no'],
-                    'sites' => $data['sites'],
-                    'brand' => $data['brand'],
-                    'description' => $data['description'],
-                    'location' => $data['location'],
-                    'company' => $data['company'],
-                    'branch' => $data['branch'],
-                    'serial_no' => $data['serial_no'],
-                    'coverage_months' => $months,
-                    'start_date' => $start,
-                    'end_date' => $end,
-                    'remarks' => $data['remarks'] ?: null,
-                ]);
-                // So the same row twice in one file is caught as well.
-                $onFile->put($key, true);
+                if ($existing) {
+                    $sameDates = $existing->first(fn ($c) => $c->start_date->eq($start) && $c->end_date?->eq($end));
+                    if ($sameDates) {
+                        $skipped++;
+                        $reasons[] = "{$label}: serial {$data['serial_no']} is already on file with these dates";
+                        continue;
+                    }
+
+                    $latestStart = $existing->max('start_date');
+                    if ($start->lt($latestStart)) {
+                        $skipped++;
+                        $reasons[] = "{$label}: serial {$data['serial_no']} already has a newer contract starting {$latestStart->format('Y-m-d')}";
+                        continue;
+                    }
+
+                    // A blank remarks cell keeps the note already on the contract.
+                    if ($payload['remarks'] === null) {
+                        unset($payload['remarks']);
+                    }
+
+                    // Renewed cover is live cover, even if the old row had been
+                    // switched off when it lapsed.
+                    $payload['is_active'] = true;
+
+                    foreach ($existing as $contract) {
+                        $contract->update($payload);
+                        $rowsUpdated++;
+                    }
+
+                    $renewedLabels[] = "{$data['po_no']}/{$data['serial_no']}";
+                    $renewed++;
+                    continue;
+                }
+
+                $contract = MaintenanceContract::create($payload);
+                // So a later row for the same serial in this file renews it.
+                $bySerial->put($serialKey, collect([$contract]));
                 $importedLabels[] = "{$data['po_no']}/{$data['serial_no']}";
                 $imported++;
             } catch (\Throwable $e) {
@@ -513,18 +548,27 @@ class MaintenanceController extends Controller
             }
         }
 
+        $labels = array_merge(
+            $importedLabels !== [] ? ['new: ' . implode(', ', $importedLabels)] : [],
+            $renewedLabels !== [] ? ['renewed: ' . implode(', ', $renewedLabels)] : [],
+        );
+
         // remarks is a 255-character column, so the PO/serial list is cut to
         // fit rather than letting a large file fail the log write.
         ActivityLog::log(
             'Batch Uploaded Maintenance Contracts',
             Str::limit(
-                "{$imported} contract(s) imported, {$skipped} skipped"
-                . ($importedLabels !== [] ? ': ' . implode(', ', $importedLabels) : ''),
+                "{$imported} imported, {$renewed} renewed, {$skipped} skipped"
+                . ($labels !== [] ? ' | ' . implode(' | ', $labels) : ''),
                 252
             )
         );
 
+        $extra = $renewed > 0
+            ? "{$renewed} renewed (" . $rowsUpdated . ' existing contract row(s) updated).'
+            : '';
+
         return redirect()->route('maintenance.index')
-            ->with('success', $this->batchSummary('maintenance contract', $imported, $skipped, $reasons));
+            ->with('success', $this->batchSummary('maintenance contract', $imported, $skipped, $reasons, $extra));
     }
 }

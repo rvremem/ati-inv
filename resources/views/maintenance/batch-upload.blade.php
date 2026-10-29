@@ -67,20 +67,22 @@
                                     worked out from the two dates.
                                 </li>
                                 <li>
-                                    <strong>A contract with the same <code>serial_no</code> and
-                                    <code>start_date</code> as one already on file is skipped</strong>, so uploading
-                                    the same file twice does not create duplicates. A renewal with a new start date
-                                    still imports.
+                                    <strong>A <code>serial_no</code> already on file is treated as a renewal</strong>
+                                    &mdash; the existing contract (every row for that serial) is updated with this
+                                    row's dates, PO and details instead of a new contract being added. A blank
+                                    <code>remarks</code> keeps the existing note.
+                                </li>
+                                <li>
+                                    A row with the <strong>same dates</strong> as the contract on file changes
+                                    nothing and is skipped, so uploading the same file twice is harmless. A row that
+                                    <strong>starts earlier</strong> than the contract on file is skipped too, so an
+                                    old spreadsheet can't undo a renewal.
                                 </li>
                                 <li>
                                     Rows with a missing required field, an invalid date (e.g. Feb 30), an
                                     <code>end_date</code> on or before <code>start_date</code>, a non-numeric
                                     <code>coverage_months</code>, or the wrong number of columns are skipped and
                                     reported back with the reason. The rest still import.
-                                </li>
-                                <li>
-                                    This upload only ever <strong>creates</strong> contracts &mdash; it never edits
-                                    an existing one.
                                 </li>
                             </ul>
                         </div>
