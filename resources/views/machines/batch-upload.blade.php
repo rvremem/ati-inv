@@ -24,10 +24,15 @@
                             <code>serial_no</code> from the machines file you upload alongside it.
                         </p>
                         <p class="small mb-0 text-muted">
-                            Neither file contains a database id. Category, customer, supplier and location are
-                            matched by their code or name, and <code>part_no</code> is matched against the parts
-                            catalogue &mdash; <strong>a part number that isn't in the catalogue is added to it</strong>
-                            using <code>part_description</code> and <code>part_type</code>, so a machine never
+                            Neither file contains a database id. Category and supplier are matched by their
+                            code or name. <strong>A <code>category</code>, <code>supplier</code> or
+                            <code>customer</code> that isn't on file is added as a new active one</strong>,
+                            and <strong>a <code>location</code> code that
+                            isn't on file is added as a new active location</strong> (in the hub named in the
+                            optional <code>hub</code> column, or <strong>Manila</strong> if left blank; your own
+                            hub if your account is limited to one). <code>part_no</code> is matched against the parts catalogue &mdash;
+                            <strong>a part number that isn't in the catalogue is added to it</strong> using
+                            <code>part_description</code> and <code>part_type</code>, so a machine never
                             arrives missing half its parts.
                         </p>
                     </div>
@@ -83,13 +88,33 @@
                                     one. Use Add Parts on the machine itself for machines already in the system.
                                 </li>
                                 <li>
-                                    <code>serial_no</code>, <code>description</code>, <code>category</code> and
-                                    <code>date_received</code> are required on every machine row. The category
-                                    must already exist &mdash; unlike parts, categories are not created for you.
+                                    <code>serial_no</code>, <code>description</code> and <code>category</code> are
+                                    required on every machine row; a blank <code>date_received</code> falls back to
+                                    today. Categories, suppliers, customers, locations and parts are created for you
+                                    when not on file &mdash; <strong>watch the spelling</strong>, as a typo becomes a
+                                    new entry. New categories get their code as the description; edit them in
+                                    Settings &rarr; Categories. New ones are listed in the result message.
+                                </li>
+                                <li>
+                                    <strong>Check customer and location spellings.</strong> A typo in
+                                    <code>customer</code> or <code>location</code> (for example
+                                    <code>A-01</code> instead of <code>A01</code>) creates a new customer or
+                                    location instead of failing the row. New ones are listed in the result
+                                    message so you can spot and fix them. A customer or location that exists
+                                    but is inactive causes the row to be skipped.
+                                </li>
+                                <li>
+                                    <strong>New locations need a hub.</strong> Put the hub's name in the
+                                    <code>hub</code> column. Blank defaults to <strong>Manila</strong>, and an
+                                    account limited to a single hub always uses its own. A hub name that isn't
+                                    on file skips the row.
+                                    New locations get their code as the description &mdash; edit them on the
+                                    Locations page afterwards.
                                 </li>
                                 <li>
                                     The parts file is optional. Without it you get machines with no parts, which
-                                    you can fill in later.
+                                    you can fill in later. A parts row's new location is created in the hub of
+                                    the machine it belongs to.
                                 </li>
                                 <li>
                                     Skipped rows are reported back with the reason. The rest still import.
@@ -130,6 +155,10 @@
                     <pre class="bg-light p-3 rounded mb-0" style="overflow-x:auto;"><small>{{ $csvLine($machineColumns) }}
 @foreach ($machineRows as $row){{ $csvLine($row) }}
 @endforeach</small></pre>
+                    <p class="small text-muted mb-0 mt-3">
+                        <code>hub</code> is optional (blank = Manila) and decides where a new
+                        <code>location</code> is created. The machine is also filed under that hub.
+                    </p>
                 </div>
             </div>
 

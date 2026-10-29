@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 
 class InventoryController extends Controller
 {
@@ -53,19 +54,33 @@ class InventoryController extends Controller
         'serial_no',
         'location',
         'remarks',
-        'status',
     ];
 
     /**
-     * The only statuses a serial batch upload row may declare.
-     *
-     * Matched case-insensitively against the CSV (see importItemSerialRows()),
-     * the same way hub/location/client/supplier are — a spreadsheet is typed
-     * by hand, and "receiving" vs "Receiving" isn't a mistake worth losing the
-     * row over. The canonical spelling stored on the row is always one of
-     * these two.
+     * The only statuses a serials or quantities batch upload row is booked in
+     * with. Not a CSV column: see batchStockStatus().
      */
     public const ITEM_SERIAL_BATCH_STATUSES = ['Receiving', 'Old Stock'];
+
+    /**
+     * Third-file columns: stock for parts that are NOT serialised.
+     *
+     * Same shape as the serials file with quantity where serial_no was. A
+     * non-serialised part is tracked by quantity, so each row books in one
+     * receipt of N units — exactly what the Receive Parts screen creates for
+     * such a part. Linked to the items file by part_no, like the serials file.
+     */
+    public const ITEM_QUANTITY_BATCH_COLUMNS = [
+        'part_no',
+        'date_received',
+        'ati_po',
+        'client',
+        'supplier',
+        'hub',
+        'quantity',
+        'location',
+        'remarks',
+    ];
 
     public const ITEM_BATCH_COLUMNS = [
         'part_no',
@@ -257,12 +272,12 @@ class InventoryController extends Controller
      *
      * The columns mirror the Receive Parts screen field for field, so a person
      * filling the sheet is filling the same form they already know — part,
-     * date, PO, client, supplier, hub, serial, location, status.
+     * date, PO, client, supplier, hub, serial, location.
      *
      * A serial has nowhere to live on item_parts — it exists because a physical
      * unit arrived — so each accepted row becomes a receiving row exactly as
-     * that screen would create it: quantity 1, status taken from the row
-     * (see ITEM_SERIAL_BATCH_STATUSES — Receiving or Old Stock).
+     * that screen would create it: quantity 1, status Receiving when the row
+     * has a PO and Old Stock when it does not (see batchStockStatus()).
      *
      * Unlike the machine parts import, a part already in the catalogue is a
      * valid target. That restriction exists for machines because a duplicate
@@ -270,17 +285,31 @@ class InventoryController extends Controller
      * does have one, and refusing it would mean serials could only ever be
      * loaded on a part's very first import.
      *
+     * A location that is not on file is created, in the hub the row names (or
+     * the restricted user's own). The hub is already required on every row, so
+     * there is always one to put it in. Creation happens after every other
+     * check that can skip the row, so a skipped row never leaves a stray
+     * location behind.
+     *
      * @param  array<string, array{id:int, is_serialized:bool}>  $newParts  keyed by lower-cased part_no
+     * @return array{imported:int, skipped:int, reasons:array, created_locations:array<int,string>, created_customers:array<int,string>, created_suppliers:array<int,string>}
      */
     private function importItemSerialRows(UploadedFile $file, array $newParts): array
     {
         [$header, $records] = $this->readCsv($file);
 
-        // Locations carry their hub now, so the pair is kept together: a row
-        // naming a shelf that belongs to another branch is a mistake worth
-        // catching rather than silently filing stock in the wrong place.
-        $locations = Location::where('is_active', true)->get()
-            ->mapWithKeys(fn($l) => [mb_strtolower(trim($l->code)) => ['id' => $l->id, 'hub_id' => $l->hub_id]]);
+        // Every location, active or not, with its hub kept alongside. locations.code
+        // is unique, so an inactive match has to be recognised here rather than
+        // re-created. The hub is kept so a row naming a shelf that belongs to
+        // another branch is still caught instead of silently filing stock in the
+        // wrong place. New locations are put back in this map, so a code that
+        // appears on several rows creates one location, not one per row.
+        $locations = Location::get()
+            ->mapWithKeys(fn($l) => [mb_strtolower(trim($l->code)) => [
+                'id' => $l->id,
+                'hub_id' => $l->hub_id,
+                'is_active' => (bool) $l->is_active,
+            ]]);
 
         $customers = Customer::get()
             ->mapWithKeys(fn($c) => [mb_strtolower(trim($c->name)) => $c->id]);
@@ -292,12 +321,6 @@ class InventoryController extends Controller
 
         $hubs = Hub::get()
             ->mapWithKeys(fn($h) => [mb_strtolower(trim($h->hub_name)) => $h->id]);
-
-        // Canonical spelling for each accepted status, keyed lower-case, so a
-        // sheet typed "receiving" or "OLD STOCK" still resolves and the value
-        // actually stored on the row is always one of ITEM_SERIAL_BATCH_STATUSES.
-        $statuses = collect(self::ITEM_SERIAL_BATCH_STATUSES)
-            ->mapWithKeys(fn($s) => [mb_strtolower($s) => $s]);
 
         // Serials already booked in. A serial identifies one physical unit, so
         // re-importing one would double-count that unit in Stock Levels.
@@ -312,6 +335,9 @@ class InventoryController extends Controller
         $imported = 0;
         $skipped = 0;
         $reasons = [];
+        $createdLocations = [];
+        $createdCustomers = [];
+        $createdSuppliers = [];
 
         foreach ($records as $i => $row) {
             $line = $i + 2;
@@ -372,30 +398,12 @@ class InventoryController extends Controller
                 continue;
             }
 
-            // --- status ------------------------------------------------------
-            // Required: a CSV row books in one physical unit and has to say
-            // whether it's freshly Receiving or being backfilled as Old Stock.
-            // Matched case-insensitively, like hub/location/client/supplier
-            // below — a spreadsheet is typed by hand.
-            $statusRaw = trim($data['status'] ?? '');
-
-            if ($statusRaw === '') {
-                $skipped++;
-                $reasons[] = "{$serial}: status is required";
-                continue;
-            }
-
-            $status = $statuses->get(mb_strtolower($statusRaw));
-
-            if (! $status) {
-                $skipped++;
-                $reasons[] = "{$serial}: status '{$statusRaw}' must be one of " . implode(', ', self::ITEM_SERIAL_BATCH_STATUSES);
-                continue;
-            }
+            $status = $this->batchStockStatus($data);
 
             // --- hub -------------------------------------------------------
-            // Required, because stock has to land in a branch and the location
-            // is checked against it below.
+            // Required, because stock has to land in a branch, the location
+            // is checked against it below, and it is where a location that is
+            // not on file gets created.
             $hubName = trim($data['hub'] ?? '');
             $hubId = $forcedHub;
 
@@ -415,7 +423,9 @@ class InventoryController extends Controller
                 }
             }
 
-            // --- location --------------------------------------------------
+            // --- location (lookup only) -------------------------------------
+            // A location that is not on file is NOT a reason to skip: it is
+            // created further down, once nothing else can reject the row.
             $locationCode = trim($data['location'] ?? '');
 
             if ($locationCode === '') {
@@ -424,21 +434,24 @@ class InventoryController extends Controller
                 continue;
             }
 
-            $location = $locations->get(mb_strtolower($locationCode));
+            $locationKey = mb_strtolower($locationCode);
+            $location = $locations->get($locationKey);
 
-            if (! $location) {
-                $skipped++;
-                $reasons[] = "{$serial}: location '{$locationCode}' is not on file";
-                continue;
-            }
+            if ($location) {
+                if (! $location['is_active']) {
+                    $skipped++;
+                    $reasons[] = "{$serial}: location '{$locationCode}' exists but is inactive — reactivate it on the Locations page first";
+                    continue;
+                }
 
-            // The shelf must be at the branch the row names. Receiving into
-            // Cebu onto a Manila shelf is what the form's filtered dropdown
-            // prevents, and a spreadsheet has no dropdown.
-            if ((int) $location['hub_id'] !== (int) $hubId) {
-                $skipped++;
-                $reasons[] = "{$serial}: location '{$locationCode}' is not in that hub";
-                continue;
+                // The shelf must be at the branch the row names. Receiving into
+                // Cebu onto a Manila shelf is what the form's filtered dropdown
+                // prevents, and a spreadsheet has no dropdown.
+                if ((int) $location['hub_id'] !== (int) $hubId) {
+                    $skipped++;
+                    $reasons[] = "{$serial}: location '{$locationCode}' is not in that hub";
+                    continue;
+                }
             }
 
             // --- date ------------------------------------------------------
@@ -460,29 +473,52 @@ class InventoryController extends Controller
             }
 
             // --- client / supplier ----------------------------------------
-            // Both optional and both nullable on receiving, but a name that is
-            // given and does not resolve is a typo worth reporting rather than
-            // importing as "none".
-            $customerId = null;
-            if (($data['client'] ?? '') !== '') {
-                $customerId = $customers->get(mb_strtolower(trim($data['client'])));
-
-                if (! $customerId) {
-                    $skipped++;
-                    $reasons[] = "{$serial}: client '{$data['client']}' is not on file";
-                    continue;
-                }
+            // Both optional and both nullable on receiving. A name that is not
+            // on file is created rather than rejected, the same trade-off as
+            // the items file's supplier: a typo becomes a new entry to merge by
+            // hand. Placed after every check that can skip the row, so a
+            // skipped row never leaves a stray client or supplier behind.
+            try {
+                $customerId = $this->findOrCreateByName(
+                    Customer::class, $data['client'] ?? '', $customers, 'an item serials import', $createdCustomers
+                );
+                $supplierId = $this->findOrCreateByName(
+                    Supplier::class, $data['supplier'] ?? '', $suppliers, 'an item serials import', $createdSuppliers
+                );
+            } catch (\Throwable $e) {
+                $skipped++;
+                $reasons[] = "{$serial}: could not create client/supplier — {$e->getMessage()}";
+                continue;
             }
 
-            $supplierId = null;
-            if (($data['supplier'] ?? '') !== '') {
-                $supplierId = $suppliers->get(mb_strtolower(trim($data['supplier'])));
-
-                if (! $supplierId) {
+            // --- location (create) -----------------------------------------
+            // Last, so a row rejected by any check above leaves nothing behind.
+            if (! $location) {
+                try {
+                    $newLocation = Location::create([
+                        'code'        => $locationCode,
+                        // description is required on the Locations form; the
+                        // code is the best label available. Edit it later on
+                        // the Locations page.
+                        'description' => $locationCode,
+                        'hub_id'      => $hubId,
+                        'is_active'   => true,
+                        'created_by'  => auth()->id(),
+                    ]);
+                } catch (\Throwable $e) {
                     $skipped++;
-                    $reasons[] = "{$serial}: supplier '{$data['supplier']}' is not on file";
+                    $reasons[] = "{$serial}: could not create location '{$locationCode}' — {$e->getMessage()}";
                     continue;
                 }
+
+                ActivityLog::log(
+                    'Created Location',
+                    "Code: {$newLocation->code} | auto-created by an item serials import"
+                );
+
+                $location = ['id' => $newLocation->id, 'hub_id' => $hubId, 'is_active' => true];
+                $locations->put($locationKey, $location);
+                $createdLocations[] = $newLocation->code;
             }
 
             try {
@@ -510,7 +546,305 @@ class InventoryController extends Controller
             }
         }
 
-        return ['imported' => $imported, 'skipped' => $skipped, 'reasons' => $reasons];
+        return [
+            'imported' => $imported,
+            'skipped' => $skipped,
+            'reasons' => $reasons,
+            'created_locations' => $createdLocations,
+            'created_customers' => $createdCustomers,
+            'created_suppliers' => $createdSuppliers,
+        ];
+    }
+
+    /**
+     * The status a serials or quantities row is booked in with, decided by its
+     * ati_po: a PO means stock arriving on an order now (Receiving); no PO
+     * means stock already on hand being backfilled (Old Stock).
+     *
+     * A status column in an older file is ignored — rowToPayload() drops
+     * columns not in the list.
+     */
+    private function batchStockStatus(array $data): string
+    {
+        return trim($data['ati_po'] ?? '') !== '' ? 'Receiving' : 'Old Stock';
+    }
+
+    /**
+     * Resolves a client or supplier name to an id, creating it when it is not
+     * on file. Blank means "none" and returns null.
+     *
+     * $map holds every row, active or not, keyed by lower-cased name, so a
+     * deactivated name resolves to that row instead of creating a second one.
+     * It is updated in place so a new name on several rows is created once.
+     *
+     * @param  class-string<Customer|Supplier>  $model
+     * @param  array<int,string>                $created  names created so far; appended to
+     */
+    private function findOrCreateByName(string $model, string $name, Collection $map, string $source, array &$created): ?int
+    {
+        $name = trim($name);
+
+        if ($name === '') {
+            return null;
+        }
+
+        $key = mb_strtolower($name);
+
+        if ($id = $map->get($key)) {
+            return $id;
+        }
+
+        $row = $model::create(['name' => $name, 'is_active' => true]);
+
+        ActivityLog::log(
+            $model === Customer::class ? 'Created Customer' : 'Created Supplier',
+            "Name: {$row->name} | auto-created by {$source}"
+        );
+
+        $map->put($key, $row->id);
+        $created[] = $row->name;
+
+        return $row->id;
+    }
+
+    /**
+     * The quantities half of the upload: one receipt of N units per row, for
+     * parts that are NOT serialised.
+     *
+     * Mirrors importItemSerialRows() field for field — the only differences are
+     * that a quantity replaces the serial, the part must be non-serialised
+     * (a serialised part's units belong in the serials file, one per serial),
+     * and there is no duplicate check: receiving 10 more of a part is a normal
+     * thing to do, where receiving the same serial twice is not.
+     *
+     * Each accepted row becomes a receiving row with serial_no NULL and the
+     * quantity given, which is what Stock Levels sums.
+     *
+     * A location that is not on file is created in the row's hub, after every
+     * other check that can skip the row, same as the serials import.
+     *
+     * @param  array<string, array{id:int, is_serialized:bool}>  $newParts  keyed by lower-cased part_no
+     * @return array{imported:int, skipped:int, reasons:array, created_locations:array<int,string>, created_customers:array<int,string>, created_suppliers:array<int,string>}
+     */
+    private function importItemQuantityRows(UploadedFile $file, array $newParts): array
+    {
+        [$header, $records] = $this->readCsv($file);
+
+        $locations = Location::get()
+            ->mapWithKeys(fn($l) => [mb_strtolower(trim($l->code)) => [
+                'id' => $l->id,
+                'hub_id' => $l->hub_id,
+                'is_active' => (bool) $l->is_active,
+            ]]);
+
+        $customers = Customer::get()
+            ->mapWithKeys(fn($c) => [mb_strtolower(trim($c->name)) => $c->id]);
+
+        $suppliers = Supplier::get()
+            ->mapWithKeys(fn($s) => [mb_strtolower(trim($s->name)) => $s->id]);
+
+        $hubs = Hub::get()
+            ->mapWithKeys(fn($h) => [mb_strtolower(trim($h->hub_name)) => $h->id]);
+
+        $forcedHub = $this->hubScope();
+
+        $imported = 0;
+        $skipped = 0;
+        $reasons = [];
+        $createdLocations = [];
+        $createdCustomers = [];
+        $createdSuppliers = [];
+
+        foreach ($records as $i => $row) {
+            $line = $i + 2;
+            $data = $this->rowToPayload($header, $row, self::ITEM_QUANTITY_BATCH_COLUMNS);
+
+            if ($data === null) {
+                $skipped++;
+                $reasons[] = "line {$line}: column count does not match the header";
+                continue;
+            }
+
+            $partNo = trim($data['part_no'] ?? '');
+            $qtyRaw = trim($data['quantity'] ?? '');
+
+            if ($partNo === '' || $qtyRaw === '') {
+                $skipped++;
+                $reasons[] = "line {$line}: part_no and quantity are required";
+                continue;
+            }
+
+            $partKey = mb_strtolower($partNo);
+
+            // A part from this upload first, then the existing catalogue.
+            $part = $newParts[$partKey] ?? null;
+
+            if (! $part) {
+                $existing = ItemPart::whereRaw('LOWER(part_no) = ?', [$partKey])
+                    ->select('id', 'is_serialized')->first();
+
+                if (! $existing) {
+                    $skipped++;
+                    $reasons[] = "line {$line}: no part '{$partNo}' in the items file or the catalogue";
+                    continue;
+                }
+
+                $part = ['id' => $existing->id, 'is_serialized' => (bool) $existing->is_serialized];
+            }
+
+            // The mirror image of the serials file's rule: a serialised part is
+            // counted by its serials, so a bare quantity against one would add
+            // stock Stock Levels cannot attribute to any unit.
+            if ($part['is_serialized']) {
+                $skipped++;
+                $reasons[] = "line {$line}: '{$partNo}' is a serialised part — put its units in the serials file, one row per serial";
+                continue;
+            }
+
+            if (! ctype_digit($qtyRaw) || (int) $qtyRaw < 1) {
+                $skipped++;
+                $reasons[] = "line {$line}: quantity '{$qtyRaw}' for {$partNo} must be a whole number greater than zero";
+                continue;
+            }
+
+            $quantity = (int) $qtyRaw;
+            $label = "{$partNo} (line {$line})";
+
+            $status = $this->batchStockStatus($data);
+
+            // --- hub -------------------------------------------------------
+            $hubName = trim($data['hub'] ?? '');
+            $hubId = $forcedHub;
+
+            if ($hubId === null) {
+                if ($hubName === '') {
+                    $skipped++;
+                    $reasons[] = "{$label}: hub is required";
+                    continue;
+                }
+
+                $hubId = $hubs->get(mb_strtolower($hubName));
+
+                if (! $hubId) {
+                    $skipped++;
+                    $reasons[] = "{$label}: hub '{$hubName}' is not on file";
+                    continue;
+                }
+            }
+
+            // --- location (lookup only) -------------------------------------
+            $locationCode = trim($data['location'] ?? '');
+
+            if ($locationCode === '') {
+                $skipped++;
+                $reasons[] = "{$label}: location is required";
+                continue;
+            }
+
+            $locationKey = mb_strtolower($locationCode);
+            $location = $locations->get($locationKey);
+
+            if ($location) {
+                if (! $location['is_active']) {
+                    $skipped++;
+                    $reasons[] = "{$label}: location '{$locationCode}' exists but is inactive — reactivate it on the Locations page first";
+                    continue;
+                }
+
+                if ((int) $location['hub_id'] !== (int) $hubId) {
+                    $skipped++;
+                    $reasons[] = "{$label}: location '{$locationCode}' is not in that hub";
+                    continue;
+                }
+            }
+
+            // --- date ------------------------------------------------------
+            $dateRaw = trim($data['date_received'] ?? '');
+
+            if ($dateRaw === '') {
+                $date = now()->toDateString();
+            } else {
+                try {
+                    $date = Carbon::parse($dateRaw)->toDateString();
+                } catch (\Throwable $e) {
+                    $skipped++;
+                    $reasons[] = "{$label}: date_received '{$dateRaw}' is not a date";
+                    continue;
+                }
+            }
+
+            // --- client / supplier ----------------------------------------
+            // Created when not on file; see importItemSerialRows().
+            try {
+                $customerId = $this->findOrCreateByName(
+                    Customer::class, $data['client'] ?? '', $customers, 'an item quantities import', $createdCustomers
+                );
+                $supplierId = $this->findOrCreateByName(
+                    Supplier::class, $data['supplier'] ?? '', $suppliers, 'an item quantities import', $createdSuppliers
+                );
+            } catch (\Throwable $e) {
+                $skipped++;
+                $reasons[] = "{$label}: could not create client/supplier — {$e->getMessage()}";
+                continue;
+            }
+
+            // --- location (create) -----------------------------------------
+            if (! $location) {
+                try {
+                    $newLocation = Location::create([
+                        'code'        => $locationCode,
+                        'description' => $locationCode,
+                        'hub_id'      => $hubId,
+                        'is_active'   => true,
+                        'created_by'  => auth()->id(),
+                    ]);
+                } catch (\Throwable $e) {
+                    $skipped++;
+                    $reasons[] = "{$label}: could not create location '{$locationCode}' — {$e->getMessage()}";
+                    continue;
+                }
+
+                ActivityLog::log(
+                    'Created Location',
+                    "Code: {$newLocation->code} | auto-created by an item quantities import"
+                );
+
+                $location = ['id' => $newLocation->id, 'hub_id' => $hubId, 'is_active' => true];
+                $locations->put($locationKey, $location);
+                $createdLocations[] = $newLocation->code;
+            }
+
+            try {
+                Receiving::create([
+                    'date_received' => $date,
+                    'ati_po' => ($data['ati_po'] ?? '') ?: null,
+                    'customer_id' => $customerId,
+                    'supplier_id' => $supplierId,
+                    'item_part_id' => $part['id'],
+                    'location_id' => $location['id'],
+                    'hub_id' => $hubId,
+                    'quantity' => $quantity,
+                    'serial_no' => null,
+                    'return_remarks' => ($data['remarks'] ?? '') ?: null,
+                    'status' => $status,
+                    'created_by' => auth()->id(),
+                ]);
+
+                $imported++;
+            } catch (\Throwable $e) {
+                $skipped++;
+                $reasons[] = "{$label}: {$e->getMessage()}";
+            }
+        }
+
+        return [
+            'imported' => $imported,
+            'skipped' => $skipped,
+            'reasons' => $reasons,
+            'created_locations' => $createdLocations,
+            'created_customers' => $createdCustomers,
+            'created_suppliers' => $createdSuppliers,
+        ];
     }
 
     public function itemEdit(ItemPart $item)
@@ -584,6 +918,8 @@ class InventoryController extends Controller
             'sampleRows' => $this->itemSampleRows(),
             'serialColumns' => self::ITEM_SERIAL_BATCH_COLUMNS,
             'serialRows' => $this->itemSerialSampleRows(),
+            'quantityColumns' => self::ITEM_QUANTITY_BATCH_COLUMNS,
+            'quantityRows' => $this->itemQuantitySampleRows(),
         ]);
     }
 
@@ -604,11 +940,11 @@ class InventoryController extends Controller
         $today = now()->toDateString();
 
         return [
-            // status: one of ITEM_SERIAL_BATCH_STATUSES ('Receiving' or 'Old Stock').
-            ['REPLACE-WITH-PART-NO-1', $today, 'PO-0001', $customer, $supplier, $hubName, 'REPLACE-WITH-SERIAL-1', $locationCode, '', 'Receiving'],
+            // Has a PO, so it is booked in as Receiving.
+            ['REPLACE-WITH-PART-NO-1', $today, 'PO-0001', $customer, $supplier, $hubName, 'REPLACE-WITH-SERIAL-1', $locationCode, ''],
             // Second row leaves the optional columns blank; only part_no,
-            // hub, serial_no, location and status are required.
-            ['REPLACE-WITH-PART-NO-1', '', '', '', '', $hubName, 'REPLACE-WITH-SERIAL-2', $locationCode, 'Optional note', 'Old Stock'],
+            // hub, serial_no and location are required. No PO, so Old Stock.
+            ['REPLACE-WITH-PART-NO-1', '', '', '', '', $hubName, 'REPLACE-WITH-SERIAL-2', $locationCode, 'Optional note'],
         ];
     }
 
@@ -620,6 +956,42 @@ class InventoryController extends Controller
             self::ITEM_SERIAL_BATCH_COLUMNS,
             $this->itemSerialSampleRows(),
             'item_serials_template.csv'
+        );
+    }
+
+    private function itemQuantitySampleRows(): array
+    {
+        // Real names throughout, as in the serials sample. REPLACE-WITH-PART-NO-2
+        // is the NON-serialised part in the items template, so the two samples
+        // line up when uploaded together.
+        $customer = Customer::where('is_active', true)->orderBy('name')->value('name') ?: '';
+        $supplier = Supplier::where('is_active', true)->orderBy('name')->value('name') ?: '';
+
+        $location = Location::where('is_active', true)->orderBy('code')->first();
+        $hubName = $location?->hub?->hub_name
+            ?? Hub::orderBy('hub_name')->value('hub_name')
+            ?? '';
+        $locationCode = $location->code ?? '';
+
+        $today = now()->toDateString();
+
+        return [
+            // Has a PO, so it is booked in as Receiving.
+            ['REPLACE-WITH-PART-NO-2', $today, 'PO-0001', $customer, $supplier, $hubName, '10', $locationCode, ''],
+            // Second row leaves the optional columns blank; only part_no,
+            // hub, quantity and location are required. No PO, so Old Stock.
+            ['REPLACE-WITH-PART-NO-2', '', '', '', '', $hubName, '5', $locationCode, 'Optional note'],
+        ];
+    }
+
+    public function itemQuantitySampleCsv()
+    {
+        $this->authorizeItemManagement();
+
+        return $this->streamCsv(
+            self::ITEM_QUANTITY_BATCH_COLUMNS,
+            $this->itemQuantitySampleRows(),
+            'item_quantities_template.csv'
         );
     }
 
@@ -653,59 +1025,106 @@ class InventoryController extends Controller
     }
 
     /**
-     * Two files, the same parent/child shape the machines upload uses.
+     * Up to three files, the same parent/child shape the machines upload uses.
      *
      * The catalogue file creates parts; the optional serials file books in one
-     * physical unit per serial against them. Both run in one transaction so a
-     * failure part-way cannot leave parts created with half their stock.
+     * physical unit per serial against serialised parts, and the optional
+     * quantities file books in N units against non-serialised ones. All run in
+     * one transaction so a failure part-way cannot leave parts created with
+     * half their stock.
      */
     public function itemBatchStore(Request $request)
     {
         $this->authorizeItemManagement();
 
         $request->validate([
-            'csv_file'     => 'nullable|file|mimes:csv,txt',
-            'serials_file' => 'nullable|file|mimes:csv,txt',
+            'csv_file'        => 'nullable|file|mimes:csv,txt',
+            'serials_file'    => 'nullable|file|mimes:csv,txt',
+            'quantities_file' => 'nullable|file|mimes:csv,txt',
         ]);
 
-        if (!$request->hasFile('csv_file') && !$request->hasFile('serials_file')) {
+        if (! $request->hasFile('csv_file') && ! $request->hasFile('serials_file') && ! $request->hasFile('quantities_file')) {
             return back()->withInput()->withErrors([
-                'csv_file' => 'Upload at least one file — item parts, item serials, or both.',
+                'csv_file' => 'Upload at least one file — item parts, item serials, item quantities, or any combination.',
             ]);
         }
 
         $itemsFile = $request->file('csv_file');
         $serialsFile = $request->file('serials_file');
+        $quantitiesFile = $request->file('quantities_file');
 
-        [$items, $serials] = DB::transaction(function () use ($itemsFile, $serialsFile) {
+        [$items, $serials, $quantities] = DB::transaction(function () use ($itemsFile, $serialsFile, $quantitiesFile) {
             $items = $itemsFile
                 ? $this->importItemRows($itemsFile)
                 : ['imported' => 0, 'skipped' => 0, 'reasons' => [], 'created_suppliers' => 0, 'parts' => []];
 
+            $empty = [
+                'imported' => 0, 'skipped' => 0, 'reasons' => [],
+                'created_locations' => [], 'created_customers' => [], 'created_suppliers' => [],
+            ];
+
             $serials = $serialsFile
                 ? $this->importItemSerialRows($serialsFile, $items['parts'])
-                : ['imported' => 0, 'skipped' => 0, 'reasons' => []];
+                : $empty;
 
-            return [$items, $serials];
+            $quantities = $quantitiesFile
+                ? $this->importItemQuantityRows($quantitiesFile, $items['parts'])
+                : $empty;
+
+            return [$items, $serials, $quantities];
         });
+
+        $createdLocations = array_values(array_unique(array_merge(
+            $serials['created_locations'],
+            $quantities['created_locations']
+        )));
+
+        // The items file counts the suppliers it creates; the stock files
+        // name them.
+        $createdCustomers = array_values(array_unique(array_merge(
+            $serials['created_customers'],
+            $quantities['created_customers']
+        )));
+        $createdSuppliers = $items['created_suppliers'] + count(array_unique(array_merge(
+            $serials['created_suppliers'],
+            $quantities['created_suppliers']
+        )));
+
+        $skipped = $items['skipped'] + $serials['skipped'] + $quantities['skipped'];
 
         ActivityLog::log(
             'Batch Uploaded Items',
             "{$items['imported']} item(s) imported, {$serials['imported']} serial(s) received, "
-                . ($items['skipped'] + $serials['skipped']) . ' row(s) skipped, '
-                . "{$items['created_suppliers']} supplier(s) created"
+                . "{$quantities['imported']} quantity line(s) received, {$skipped} row(s) skipped, "
+                . "{$createdSuppliers} supplier(s) created, "
+                . count($createdCustomers) . ' client(s) created, '
+                . count($createdLocations) . ' location(s) created'
         );
 
+        // Locations and clients are listed by name so a typo ("A-01 " vs
+        // "A01"), which now makes a new entry instead of failing the row, is
+        // easy to spot.
         $extra = trim(
-            ($items['created_suppliers'] > 0 ? "{$items['created_suppliers']} new supplier(s) added to the Suppliers list. " : '')
-                . ($serials['imported'] > 0 ? "{$serials['imported']} serial(s) received into stock." : '')
+            ($createdSuppliers > 0 ? "{$createdSuppliers} new supplier(s) added to the Suppliers list. " : '')
+                . (! empty($createdCustomers)
+                    ? count($createdCustomers) . ' new client(s) created: '
+                        . implode(', ', array_slice($createdCustomers, 0, 5))
+                        . (count($createdCustomers) > 5 ? ', …' : '') . '. '
+                    : '')
+                . ($serials['imported'] > 0 ? "{$serials['imported']} serial(s) received into stock. " : '')
+                . ($quantities['imported'] > 0 ? "{$quantities['imported']} quantity line(s) received into stock. " : '')
+                . (! empty($createdLocations)
+                    ? count($createdLocations) . ' new location(s) created: '
+                        . implode(', ', array_slice($createdLocations, 0, 5))
+                        . (count($createdLocations) > 5 ? ', …' : '') . '.'
+                    : '')
         );
 
         return redirect()->route('inventory.items')->with('success', $this->batchSummary(
             'item',
             $items['imported'],
-            $items['skipped'] + $serials['skipped'],
-            array_merge($items['reasons'], $serials['reasons']),
+            $skipped,
+            array_merge($items['reasons'], $serials['reasons'], $quantities['reasons']),
             $extra
         ));
     }
@@ -837,6 +1256,7 @@ class InventoryController extends Controller
                     'is_serialized' => $this->csvBool($data['is_serialized'], false),
                     'remarks' => $data['remarks'] ?: null,
                     'is_active' => $this->csvBool($data['is_active'], true),
+                    'warranty' => $data['warranty'] ?: null,
                 ]);
                 // Kept so the serials file can resolve part_no to an id, and
                 // so is_serialized is known without re-querying: a serial

@@ -78,7 +78,9 @@ class SettingsController extends Controller
     // Customers
     public function customers()
     {
-        $customers = Customer::paginate(15);
+        // Load every customer; DataTables (initialised in the layout) does the
+        // paging, search and "Showing x to y of N entries" client-side.
+        $customers = Customer::orderBy('name')->get();
         return view('settings.customers.index', compact('customers'));
     }
 
@@ -91,6 +93,7 @@ class SettingsController extends Controller
     {
         $validated = $request->validate([
             'name' => 'required|unique:customers',
+            'is_active' => 'boolean',
         ]);
 
         $customer = Customer::create($validated);
@@ -157,7 +160,7 @@ class SettingsController extends Controller
         // name carries the uniqueness rule on the single-add form, so it is the
         // customer's natural key and what makes a row a duplicate.
         $onFile = Customer::pluck('name')
-            ->map(fn ($n) => mb_strtolower(trim((string) $n)))->flip();
+            ->map(fn($n) => mb_strtolower(trim((string) $n)))->flip();
 
         $seen = [];
         $imported = 0;

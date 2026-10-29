@@ -48,14 +48,14 @@ return [
             'command' => env('DB_COMMAND', ''),
         ],
 
-        'db_inv_ho' => [
+        'ati-inv' => [
             'driver' => 'sqlsrv',
             'url' => env('DATABASE_URL'),
-            'host' => env('DB_INV_HO_HOST', env('DB_HOST', 'localhost')),
-            'port' => env('DB_INV_HO_PORT', env('DB_PORT', 1433)),
-            'database' => env('DB_INV_HO_DATABASE', env('DB_DATABASE', 'DB_INV_HO')),
-            'username' => env('DB_INV_HO_USERNAME', env('DB_USERNAME', 'sa')),
-            'password' => env('DB_INV_HO_PASSWORD', env('DB_PASSWORD', '')),
+            'host' => env('ATI_INV_HOST', env('DB_HOST', 'localhost')),
+            'port' => env('ATI_INV_PORT', env('DB_PORT', 1433)),
+            'database' => env('ATI_INV_DATABASE', env('DB_DATABASE', 'DB_INV_HO')),
+            'username' => env('ATI_INV_USERNAME', env('DB_USERNAME', 'sa')),
+            'password' => env('ATI_INV_PASSWORD', env('DB_PASSWORD', '')),
             'charset' => env('DB_CHARSET', 'utf8'),
             'prefix' => '',
             'prefix_indexes' => true,

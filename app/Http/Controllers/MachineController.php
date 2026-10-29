@@ -14,6 +14,7 @@ use App\Models\ItemPart;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 class MachineController extends Controller
@@ -26,10 +27,14 @@ class MachineController extends Controller
      * shape — machine_parts.item_part_id is NOT NULL and cannot be typed into a
      * spreadsheet, so part_no is looked up in (or added to) the catalogue first,
      * and machine_serial_no is looked up in the machines file's own results.
+     *
+     * hub is optional and exists for one reason: a location that is not on file
+     * is created, and a location cannot exist without a hub. A restricted user
+     * never needs it — their own hub is used. Blank means DEFAULT_HUB_NAME.
      */
     public const MACHINE_BATCH_COLUMNS = [
         'serial_no', 'description', 'model', 'category', 'customer',
-        'supplier', 'location', 'ati_po', 'date_received', 'unit_cost',
+        'supplier', 'location', 'ati_po', 'date_received', 'unit_cost', 'hub',
     ];
 
     public const MACHINE_PART_BATCH_COLUMNS = [
@@ -42,6 +47,12 @@ class MachineController extends Controller
 
     /** Status an installed part gets, matching storePartForm(). */
     private const IMPORT_PART_STATUS = 'available';
+
+    /**
+     * Hub used when a row names none and the user is not limited to one.
+     * Matched by hub_name, case-insensitively, like every other hub lookup.
+     */
+    private const DEFAULT_HUB_NAME = 'Manila';
 
     public function __construct()
     {
@@ -277,6 +288,9 @@ class MachineController extends Controller
      * is NOT NULL, so a template naming a category nobody has produces a file
      * where every row skips.
      *
+     * The hub is the one the sample location belongs to, so the row is coherent
+     * as written.
+     *
      * The serials stay obvious placeholders. Unlike the parts-location template
      * this upload *creates* records, so uploading it unedited makes two junk
      * machines — named clearly enough to spot and delete.
@@ -286,12 +300,18 @@ class MachineController extends Controller
         $category = Category::where('is_active', true)->orderBy('code')->value('code') ?? 'CATEGORY-CODE';
         $customer = Customer::where('is_active', true)->orderBy('name')->value('name') ?? '';
         $supplier = Supplier::where('is_active', true)->orderBy('name')->value('name') ?? '';
-        $location = Location::where('is_active', true)->orderBy('code')->value('code') ?? '';
-        $today    = now()->toDateString();
+
+        $location = Location::where('is_active', true)->orderBy('code')->first();
+        $locationCode = $location->code ?? '';
+        $hubName = $location?->hub?->hub_name
+            ?? Hub::orderBy('hub_name')->value('hub_name')
+            ?? '';
+
+        $today = now()->toDateString();
 
         return [
-            ['REPLACE-WITH-SERIAL-1', 'Sample machine', 'MODEL-A', $category, $customer, $supplier, $location, 'PO-0001', $today, '15000.00'],
-            ['REPLACE-WITH-SERIAL-2', 'Another machine', 'MODEL-B', $category, $customer, '', $location, '', $today, '0'],
+            ['REPLACE-WITH-SERIAL-1', 'Sample machine', 'MODEL-A', $category, $customer, $supplier, $locationCode, 'PO-0001', $today, '15000.00', $hubName],
+            ['REPLACE-WITH-SERIAL-2', 'Another machine', 'MODEL-B', $category, $customer, '', $locationCode, '', $today, '0', $hubName],
         ];
     }
 
@@ -351,7 +371,8 @@ class MachineController extends Controller
      *
      * Columns the file leaves out entirely come back as '' rather than absent,
      * so a file carrying only the required columns is read as blanks instead of
-     * throwing undefined-key warnings on every optional field.
+     * throwing undefined-key warnings on every optional field. That is also
+     * what keeps an older machines.csv without the new hub column working.
      */
     private function rowToPayload(array $header, array $row, array $columns): ?array
     {
@@ -363,6 +384,63 @@ class MachineController extends Controller
         $data = array_map(fn ($v) => trim((string) $v), $data);
 
         return $data + array_fill_keys($columns, '');
+    }
+
+    /**
+     * Resolves a location code to an id, creating the location when it is not
+     * on file.
+     *
+     * $locations holds every location, active or not, keyed by lower-cased
+     * code, because locations.code is unique: an inactive match has to be
+     * recognised rather than re-created. It is passed in and updated in place
+     * so a new code appearing on several rows creates one location, not one
+     * per row.
+     *
+     * A location cannot exist without a hub (the receiving screens offer
+     * locations by hub), so with no hub to put it in the row is refused rather
+     * than creating a shelf nothing will ever offer.
+     *
+     * @param  Collection<string,Location>  $locations
+     * @param  array<int,string>            $created    codes created so far; appended to
+     * @return array{0:?int, 1:?string}     [location id, error message]
+     */
+    private function resolveOrCreateLocation(string $code, ?int $hubId, Collection $locations, array &$created): array
+    {
+        $key = mb_strtolower($code);
+        $location = $locations->get($key);
+
+        if ($location) {
+            if (! $location->is_active) {
+                return [null, "location '{$code}' exists but is inactive — reactivate it on the Locations page first"];
+            }
+
+            return [$location->id, null];
+        }
+
+        if (! $hubId) {
+            return [null, "location '{$code}' is not on file, and there is no hub to create it in (give a valid hub, or add a hub named " . self::DEFAULT_HUB_NAME . ")"];
+        }
+
+        try {
+            $location = Location::create([
+                'code'        => $code,
+                // description is NOT NULL on the Locations form; the code is
+                // the best label available. Edit it on the Locations page.
+                'description' => $code,
+                'hub_id'      => $hubId,
+                'is_active'   => true,
+                'created_by'  => auth()->id(),
+            ]);
+        } catch (\Throwable $e) {
+            return [null, "could not create location '{$code}' — {$e->getMessage()}"];
+        }
+
+        ActivityLog::log('Created Location', "Code: {$location->code} | auto-created by a machines import");
+
+        $locations->put($key, $location);
+        $created[] = $location->code;
+
+        return [$location->id, null];
     }
 
     /**
@@ -384,40 +462,85 @@ class MachineController extends Controller
         $partsFile    = $request->file('parts_file');
 
         [$machines, $parts] = DB::transaction(function () use ($machinesFile, $partsFile) {
-            $machines = $this->importMachineRows($machinesFile);
+            // One location map shared by both files, so a location created for
+            // a machine is found again by that machine's parts.
+            $locations = Location::get()
+                ->mapWithKeys(fn ($l) => [mb_strtolower(trim($l->code)) => $l]);
+
+            $machines = $this->importMachineRows($machinesFile, $locations);
 
             $parts = $partsFile
-                ? $this->importMachinePartRows($partsFile, $machines['serials'])
-                : ['imported' => 0, 'skipped' => 0, 'created_parts' => 0, 'reasons' => []];
+                ? $this->importMachinePartRows($partsFile, $machines['serials'], $machines['machineHubs'], $locations)
+                : ['imported' => 0, 'skipped' => 0, 'created_parts' => 0, 'createdLocations' => [], 'reasons' => []];
 
             return [$machines, $parts];
         });
 
+        $createdLocations = array_values(array_unique(array_merge(
+            $machines['createdLocations'],
+            $parts['createdLocations']
+        )));
+
         ActivityLog::log(
             'Batch Uploaded Machines',
             "{$machines['imported']} machine(s), {$parts['imported']} part(s), "
+            . count($machines['createdCustomers']) . ' new customer(s), '
+            . count($machines['createdCategories']) . ' new category(ies), '
+            . count($machines['createdSuppliers']) . ' new supplier(s), '
+            . count($createdLocations) . ' new location(s), '
             . "{$parts['created_parts']} new catalogue item(s), "
             . ($machines['skipped'] + $parts['skipped']) . ' row(s) skipped'
         );
 
         return redirect()->route('machines.index')
-            ->with('success', $this->batchSummary($machines, $parts));
+            ->with('success', $this->batchSummary($machines, $parts, $createdLocations));
     }
 
     /**
-     * @return array{imported:int, skipped:int, reasons:array, serials:array<string,int>}
+     * @param  Collection<string,Location>  $locations  shared with the parts import
+     * @return array{imported:int, skipped:int, reasons:array, serials:array<string,int>, machineHubs:array<string,int|null>, createdCustomers:array<int,string>, createdLocations:array<int,string>, createdCategories:array<int,string>, createdSuppliers:array<int,string>}
      *         serials maps lower-cased serial => new machines.id, and is what
      *         the parts file resolves machine_serial_no against.
+     *         machineHubs maps the same serial => the hub the machine was filed
+     *         in, which is where its parts' new locations are created.
+     *         createdCustomers / createdLocations / createdCategories /
+     *         createdSuppliers list what this import added.
      */
-    private function importMachineRows(UploadedFile $file): array
+    private function importMachineRows(UploadedFile $file, Collection $locations): array
     {
         [$header, $records] = $this->readCsv($file);
 
+        // Every category and supplier, active or not: a code or name that is on
+        // file but deactivated must resolve to that row rather than create a
+        // second one under the same label. Unknown ones are created below and
+        // put back into these maps, so a new label on several rows is created
+        // once.
         $byCode = fn ($rows, $field) => $rows->mapWithKeys(fn ($r) => [mb_strtolower(trim($r->$field)) => $r->id]);
-        $categories = $byCode(Category::where('is_active', true)->get(), 'code');
-        $customers  = $byCode(Customer::where('is_active', true)->get(), 'name');
-        $suppliers  = $byCode(Supplier::where('is_active', true)->get(), 'name');
-        $locations  = $byCode(Location::where('is_active', true)->get(), 'code');
+        $categories = $byCode(Category::get(), 'code');
+        $suppliers  = $byCode(Supplier::get(), 'name');
+        $createdCategories = [];
+        $createdSuppliers = [];
+
+        // Matched by name because the CSV carries no ids. A name that is not on
+        // file is reported, not created: hubs are a short fixed list.
+        $hubs = Hub::get()->mapWithKeys(fn ($h) => [mb_strtolower(trim($h->hub_name)) => $h->id]);
+
+        // A restricted user files everything against their own branch whatever
+        // the sheet says, the same clamp store() applies.
+        $forcedHub = $this->hubScope();
+
+        // Used when the row's hub column is blank. Null if no hub is called
+        // Manila, in which case a new location cannot be created for the row.
+        $defaultHub = $hubs->get(mb_strtolower(self::DEFAULT_HUB_NAME));
+
+        // Every customer, active or not, keyed by lower-cased name. customers.name
+        // is unique, so an inactive match must be recognised here rather than
+        // re-created. New customers are put back into this map so the same new
+        // name on a later row reuses the record instead of creating a second.
+        $customers = Customer::get()
+            ->mapWithKeys(fn ($c) => [mb_strtolower(trim($c->name)) => $c]);
+        $createdCustomers = [];
+        $createdLocations = [];
 
         // serial_no carries a unique index — it is the machine's natural key,
         // which is both what makes a row a duplicate and what the parts file
@@ -425,6 +548,7 @@ class MachineController extends Controller
         $onFile = Machine::pluck('serial_no')->map(fn ($s) => mb_strtolower(trim($s)))->flip();
 
         $serials = [];
+        $machineHubs = [];
         $imported = 0;
         $skipped = 0;
         $reasons = [];
@@ -461,39 +585,30 @@ class MachineController extends Controller
             }
 
             // machines.category_id is NOT NULL, so this one is not optional.
-            $categoryId = $categories->get(mb_strtolower($data['category'] ?? ''));
-            if (! $categoryId) {
+            // An unknown code is created further down, with the other records
+            // this row may add.
+            if ($data['category'] === '') {
                 $skipped++;
-                $reasons[] = "{$serial}: category '" . ($data['category'] ?: '(blank)') . "' is not an active category";
+                $reasons[] = "{$serial}: category is required";
                 continue;
             }
 
-            // Blank means "not set"; a value that resolves to nothing is a typo
-            // worth reporting rather than quietly storing as null.
-            $optional = [
-                'customer_id' => [$customers, $data['customer'] ?? '', 'customer'],
-                'supplier_id' => [$suppliers, $data['supplier'] ?? '', 'supplier'],
-                'location_id' => [$locations, $data['location'] ?? '', 'location'],
-            ];
-
-            $ids = [];
-            $bad = null;
-            foreach ($optional as $column => [$lookup, $label, $noun]) {
-                if ($label === '') {
-                    $ids[$column] = null;
-                    continue;
+            // The hub the machine is filed in, and where a new location goes:
+            // the user's own if restricted, else the row's hub column, else
+            // the default (Manila). A name that is given but unknown is a typo
+            // worth reporting, not something to quietly replace with Manila.
+            $hubId = $forcedHub;
+            if ($hubId === null) {
+                if ($data['hub'] !== '') {
+                    $hubId = $hubs->get(mb_strtolower($data['hub']));
+                    if (! $hubId) {
+                        $skipped++;
+                        $reasons[] = "{$serial}: hub '{$data['hub']}' is not on file";
+                        continue;
+                    }
+                } else {
+                    $hubId = $defaultHub;
                 }
-                $ids[$column] = $lookup->get(mb_strtolower($label));
-                if (! $ids[$column]) {
-                    $bad = "{$serial}: {$noun} '{$label}' is not on file";
-                    break;
-                }
-            }
-
-            if ($bad) {
-                $skipped++;
-                $reasons[] = $bad;
-                continue;
             }
 
             try {
@@ -504,7 +619,91 @@ class MachineController extends Controller
                 continue;
             }
 
-            $machine = Machine::create($ids + [
+            // Everything below can create records, so every check that can skip
+            // the row comes first — a skipped row never leaves an orphan
+            // customer or location behind.
+            $customer = null;
+            if ($data['customer'] !== '') {
+                $customerKey = mb_strtolower($data['customer']);
+                $customer = $customers->get($customerKey);
+
+                if ($customer && ! $customer->is_active) {
+                    $skipped++;
+                    $reasons[] = "{$serial}: customer '{$data['customer']}' exists but is inactive — reactivate it in Settings first";
+                    continue;
+                }
+            }
+
+            // Location last among the checks: it is the only remaining step
+            // that can still skip the row, and the customer is not yet created.
+            $locationId = null;
+            if ($data['location'] !== '') {
+                [$locationId, $error] = $this->resolveOrCreateLocation(
+                    $data['location'], $hubId, $locations, $createdLocations
+                );
+
+                if ($error) {
+                    $skipped++;
+                    $reasons[] = "{$serial}: {$error}";
+                    continue;
+                }
+            }
+
+            // Category and supplier: created when not on file, the same
+            // trade-off as customers — a typo becomes a new entry to tidy by
+            // hand, and the result message lists them so it is easy to spot.
+            $categoryKey = mb_strtolower($data['category']);
+            $categoryId = $categories->get($categoryKey);
+
+            if (! $categoryId) {
+                $category = Category::create([
+                    'code'        => $data['category'],
+                    // description is required on the Categories form; the code
+                    // is the best label available. Edit it in Settings.
+                    'description' => $data['category'],
+                    'is_active'   => true,
+                ]);
+                ActivityLog::log('Created Category', "Code: {$category->code} | auto-created by a machines import");
+
+                $categoryId = $category->id;
+                $categories->put($categoryKey, $categoryId);
+                $createdCategories[] = $category->code;
+            }
+
+            $supplierId = null;
+            if ($data['supplier'] !== '') {
+                $supplierKey = mb_strtolower($data['supplier']);
+                $supplierId = $suppliers->get($supplierKey);
+
+                if (! $supplierId) {
+                    $supplier = Supplier::create(['name' => $data['supplier'], 'is_active' => true]);
+                    ActivityLog::log('Created Supplier', "Name: {$supplier->name} | auto-created by a machines import");
+
+                    $supplierId = $supplier->id;
+                    $suppliers->put($supplierKey, $supplierId);
+                    $createdSuppliers[] = $supplier->name;
+                }
+            }
+
+            $customerId = null;
+            if ($data['customer'] !== '') {
+                if (! $customer) {
+                    $customer = Customer::create([
+                        'name'      => $data['customer'],
+                        'is_active' => true,
+                    ]);
+                    $customers->put(mb_strtolower($data['customer']), $customer);
+                    $createdCustomers[] = $customer->name;
+                }
+
+                $customerId = $customer->id;
+            }
+
+            $machine = Machine::create([
+                'supplier_id'   => $supplierId,
+                'location_id'   => $locationId,
+                'hub_id'        => $hubId,
+                'customer_id'   => $customerId,
                 'serial_no'     => $serial,
                 'description'   => $data['description'],
                 'model'         => $data['model'] ?: null,
@@ -517,26 +716,34 @@ class MachineController extends Controller
             ]);
 
             $serials[$key] = $machine->id;
+            $machineHubs[$key] = $hubId;
             $imported++;
         }
 
-        return compact('imported', 'skipped', 'reasons', 'serials');
+        return compact(
+            'imported', 'skipped', 'reasons', 'serials', 'machineHubs',
+            'createdCustomers', 'createdLocations', 'createdCategories', 'createdSuppliers'
+        );
     }
 
     /**
-     * @param array<string,int> $serials lower-cased serial => machines.id, from
-     *                                   the machines file just imported.
+     * @param array<string,int>      $serials     lower-cased serial => machines.id, from
+     *                                            the machines file just imported.
+     * @param array<string,int|null> $machineHubs the hub each of those machines was filed in.
+     * @param Collection<string,Location> $locations shared with the machines import
      *
      * Unknown part numbers are added to the catalogue rather than skipped, so a
      * machine never arrives missing half its parts. part_description fills the
      * NOT NULL description; if it is blank the part number stands in for it.
+     *
+     * Unknown locations are created too, in the hub of the machine the part is
+     * going on (or the restricted user's own hub).
      */
-    private function importMachinePartRows(UploadedFile $file, array $serials): array
+    private function importMachinePartRows(UploadedFile $file, array $serials, array $machineHubs, Collection $locations): array
     {
         [$header, $records] = $this->readCsv($file);
 
-        $locations = Location::where('is_active', true)->get()
-            ->mapWithKeys(fn ($l) => [mb_strtolower(trim($l->code)) => $l->id]);
+        $forcedHub = $this->hubScope();
 
         // Soft-deleted parts stay invisible: a part_no that was deleted on
         // purpose gets re-created rather than silently resurrected.
@@ -549,6 +756,7 @@ class MachineController extends Controller
         $imported = 0;
         $skipped = 0;
         $createdParts = 0;
+        $createdLocations = [];
         $reasons = [];
 
         foreach ($records as $i => $row) {
@@ -581,12 +789,20 @@ class MachineController extends Controller
                 continue;
             }
 
+            // Resolved before the part is created, so a row skipped over its
+            // location does not leave a catalogue entry behind.
             $locationId = null;
-            if (($data['location'] ?? '') !== '') {
-                $locationId = $locations->get(mb_strtolower($data['location']));
-                if (! $locationId) {
+            if ($data['location'] !== '') {
+                [$locationId, $error] = $this->resolveOrCreateLocation(
+                    $data['location'],
+                    $forcedHub ?? ($machineHubs[$machineKey] ?? null),
+                    $locations,
+                    $createdLocations
+                );
+
+                if ($error) {
                     $skipped++;
-                    $reasons[] = "{$machineSerial}/{$partNo}: location '{$data['location']}' is not on file";
+                    $reasons[] = "{$machineSerial}/{$partNo}: {$error}";
                     continue;
                 }
             }
@@ -634,10 +850,11 @@ class MachineController extends Controller
         }
 
         return [
-            'imported'      => $imported,
-            'skipped'       => $skipped,
-            'created_parts' => $createdParts,
-            'reasons'       => $reasons,
+            'imported'         => $imported,
+            'skipped'          => $skipped,
+            'created_parts'    => $createdParts,
+            'createdLocations' => $createdLocations,
+            'reasons'          => $reasons,
         ];
     }
 
@@ -646,13 +863,39 @@ class MachineController extends Controller
      * a wholly-failed import still reported "Imported 0". Reasons are deduped
      * and capped — a 400-row file with one bad column would otherwise render a
      * flash message longer than the page.
+     *
+     * @param array<int,string> $createdLocations codes added by either file
      */
-    private function batchSummary(array $machines, array $parts): string
+    private function batchSummary(array $machines, array $parts, array $createdLocations): string
     {
         $message = "Imported {$machines['imported']} machine(s) and {$parts['imported']} part(s).";
 
         if ($parts['created_parts'] > 0) {
             $message .= " {$parts['created_parts']} new item(s) added to the parts catalogue.";
+        }
+
+        // Listed by name so a typo ("Acme Corpp") is easy to spot right after
+        // the upload and fix in Settings.
+        foreach ([
+            'createdCustomers'  => 'customer(s)',
+            'createdCategories' => 'category(ies)',
+            'createdSuppliers'  => 'supplier(s)',
+        ] as $field => $noun) {
+            $names = $machines[$field];
+
+            if (! empty($names)) {
+                $message .= ' ' . count($names) . " new {$noun} created: "
+                    . implode(', ', array_slice($names, 0, 5))
+                    . (count($names) > 5 ? ', …' : '') . '.';
+            }
+        }
+
+        // Same for locations: "A-01 " vs "A01" now makes a new shelf instead of
+        // failing the row, so the codes are listed to be checked.
+        if (! empty($createdLocations)) {
+            $message .= ' ' . count($createdLocations) . ' new location(s) created: '
+                . implode(', ', array_slice($createdLocations, 0, 5))
+                . (count($createdLocations) > 5 ? ', …' : '') . '.';
         }
 
         $skipped = $machines['skipped'] + $parts['skipped'];

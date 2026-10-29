@@ -80,6 +80,7 @@ Route::middleware('auth')->group(function () {
         Route::post('items', [InventoryController::class, 'itemStore'])->name('item-store');
         Route::get('items/sample-csv', [InventoryController::class, 'itemSampleCsv'])->name('item-sample-csv');
         Route::get('items/serials-csv', [InventoryController::class, 'itemSerialSampleCsv'])->name('item-serials-csv');
+        Route::get('items/quantities-csv', [InventoryController::class, 'itemQuantitySampleCsv'])->name('item-quantities-csv');
         Route::get('items/batch-upload', [InventoryController::class, 'itemBatchUpload'])->name('item-batch-upload');
         Route::post('items/batch-upload', [InventoryController::class, 'itemBatchStore'])->name('item-batch-store');
         Route::get('items/{item}/edit', [InventoryController::class, 'itemEdit'])->name('item-edit');
