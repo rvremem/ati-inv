@@ -17,7 +17,6 @@ use App\Http\Controllers\Concerns\ScopesByHub;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 
 class InventoryController extends Controller
@@ -43,13 +42,14 @@ class InventoryController extends Controller
      *
      * Which of serial_no / quantity a row uses is decided by the part's own
      * is_serialized flag, not by the sheet: see importItemStockRows().
+     *
+     * There is no date_received or supplier column: stock is received today,
+     * from the supplier the part itself names in item_parts.
      */
     public const ITEM_STOCK_BATCH_COLUMNS = [
         'part_no',
-        'date_received',
         'ati_po',
         'client',
-        'supplier',
         'hub',
         'serial_no',
         'quantity',
@@ -266,15 +266,16 @@ class InventoryController extends Controller
      *   1 whatever the column says. A serial_no of N/A is stored numbered —
      *   N/A-1, N/A-2, … — continuing past the highest already on file, since
      *   serials are kept unique across every part.
-     * - Non-serialised part: rows for the same part going to the same place
-     *   (hub, location, date, PO, client, supplier) are summed into a single
-     *   receipt. A blank quantity counts as 1, so two bare rows make qty 2.
-     *   serial_no must be blank or N/A.
+     * - Non-serialised part: a blank quantity counts as 1. Rows for the same
+     *   part going to the same place (hub, location, PO, client) are summed
+     *   into a single receipt, so two bare rows make qty 2. serial_no must be
+     *   blank or N/A.
      *
-     * The columns mirror the Receive Parts screen, and each receipt becomes a
-     * receiving row exactly as that screen would create it, status Receiving
-     * when the row has a PO and Old Stock when it does not (see
-     * batchStockStatus()). A blank client is booked against
+     * Required on every row: part_no, hub, location, and serial_no for a
+     * serialised part. Each receipt becomes a receiving row the way the Receive Parts
+     * screen would create it, dated today, with the part's own supplier from
+     * item_parts, status Receiving when the row has a PO and Old Stock when it
+     * does not (see batchStockStatus()). A blank client is booked against
      * BATCH_DEFAULT_CLIENT.
      *
      * A part already in the catalogue is a valid target: unlike machines, an
@@ -285,8 +286,8 @@ class InventoryController extends Controller
      * that can skip the row, so a skipped row never leaves a stray location
      * behind.
      *
-     * @param  array<string, array{id:int, is_serialized:bool}>  $newParts  keyed by lower-cased part_no
-     * @return array{serials:int, quantity_lines:int, quantity_units:int, skipped:int, reasons:array, created_locations:array<int,string>, created_customers:array<int,string>, created_suppliers:array<int,string>}
+     * @param  array<string, array{id:int, is_serialized:bool, supplier_id:?int}>  $newParts  keyed by lower-cased part_no
+     * @return array{serials:int, quantity_lines:int, quantity_units:int, skipped:int, reasons:array, created_locations:array<int,string>, created_customers:array<int,string>}
      */
     private function importItemStockRows(UploadedFile $file, array $newParts): array
     {
@@ -307,11 +308,6 @@ class InventoryController extends Controller
 
         $customers = Customer::get()
             ->mapWithKeys(fn($c) => [mb_strtolower(trim($c->name)) => $c->id]);
-
-        // Every supplier, not just active ones: a name on file but deactivated
-        // must resolve to that row rather than be reported as unknown.
-        $suppliers = Supplier::get()
-            ->mapWithKeys(fn($s) => [mb_strtolower(trim($s->name)) => $s->id]);
 
         $hubs = Hub::get()
             ->mapWithKeys(fn($h) => [mb_strtolower(trim($h->hub_name)) => $h->id]);
@@ -341,7 +337,6 @@ class InventoryController extends Controller
         $reasons = [];
         $createdLocations = [];
         $createdCustomers = [];
-        $createdSuppliers = [];
 
         foreach ($records as $i => $row) {
             $line = $i + 2;
@@ -369,7 +364,7 @@ class InventoryController extends Controller
 
             if (! $part) {
                 $existing = ItemPart::whereRaw('LOWER(part_no) = ?', [$partKey])
-                    ->select('id', 'is_serialized')->first();
+                    ->select('id', 'is_serialized', 'supplier_id')->first();
 
                 if (! $existing) {
                     $skipped++;
@@ -377,12 +372,17 @@ class InventoryController extends Controller
                     continue;
                 }
 
-                $part = ['id' => $existing->id, 'is_serialized' => (bool) $existing->is_serialized];
+                $part = [
+                    'id' => $existing->id,
+                    'is_serialized' => (bool) $existing->is_serialized,
+                    'supplier_id' => $existing->supplier_id,
+                ];
             }
 
             $serial = trim($data['serial_no'] ?? '');
             $serialKey = mb_strtolower($serial);
             $noSerial = $serialKey === $noSerialKey;
+            // One serial is one unit; a non-serialised row may override below.
             $quantity = 1;
 
             if ($part['is_serialized']) {
@@ -418,6 +418,7 @@ class InventoryController extends Controller
                     continue;
                 }
 
+                // Blank counts as 1, so two bare rows of a part make qty 2.
                 $qtyRaw = trim($data['quantity'] ?? '');
 
                 if ($qtyRaw !== '') {
@@ -487,43 +488,25 @@ class InventoryController extends Controller
                 }
             }
 
-            // --- date ------------------------------------------------------
-            // Blank falls back to today rather than skipping the row: the unit
-            // is being received now, and a missing date is not a mistake worth
-            // losing the row over. A date that is there but unreadable is.
-            $dateRaw = trim($data['date_received'] ?? '');
+            // Not columns: stock is received today, from the part's own supplier.
+            $date = now()->toDateString();
+            $supplierId = $part['supplier_id'];
 
-            if ($dateRaw === '') {
-                $date = now()->toDateString();
-            } else {
-                try {
-                    $date = Carbon::parse($dateRaw)->toDateString();
-                } catch (\Throwable $e) {
-                    $skipped++;
-                    $reasons[] = "{$label}: date_received '{$dateRaw}' is not a date";
-                    continue;
-                }
-            }
-
-            // --- client / supplier ----------------------------------------
-            // A blank client is booked against BATCH_DEFAULT_CLIENT; supplier
-            // stays optional. A name that is not on file is created rather
-            // than rejected, the same trade-off as the items file's supplier:
-            // a typo becomes a new entry to merge by hand. Placed after every
-            // check that can skip the row, so a skipped row never leaves a
-            // stray client or supplier behind.
+            // --- client ----------------------------------------------------
+            // A blank client is booked against BATCH_DEFAULT_CLIENT. A name
+            // that is not on file is created rather than rejected, the same
+            // trade-off as the items file's supplier: a typo becomes a new
+            // entry to merge by hand. Placed after every check that can skip
+            // the row, so a skipped row never leaves a stray client behind.
             $client = trim($data['client'] ?? '') ?: self::BATCH_DEFAULT_CLIENT;
 
             try {
                 $customerId = $this->findOrCreateByName(
                     Customer::class, $client, $customers, 'an item stock import', $createdCustomers
                 );
-                $supplierId = $this->findOrCreateByName(
-                    Supplier::class, $data['supplier'] ?? '', $suppliers, 'an item stock import', $createdSuppliers
-                );
             } catch (\Throwable $e) {
                 $skipped++;
-                $reasons[] = "{$label}: could not create client/supplier — {$e->getMessage()}";
+                $reasons[] = "{$label}: could not create client — {$e->getMessage()}";
                 continue;
             }
 
@@ -563,9 +546,9 @@ class InventoryController extends Controller
             // Non-serialised: held back and summed with any other row bound for
             // the same receipt; written once the whole file has been read.
             if (! $part['is_serialized']) {
+                // Date and supplier are fixed per part, so they need no place here.
                 $groupKey = implode('|', [
-                    $part['id'], $hubId, $location['id'], $date,
-                    mb_strtolower((string) $atiPo), $customerId, $supplierId,
+                    $part['id'], $hubId, $location['id'], mb_strtolower((string) $atiPo), $customerId,
                 ]);
 
                 $groups[$groupKey] ??= [
@@ -658,7 +641,6 @@ class InventoryController extends Controller
             'reasons' => $reasons,
             'created_locations' => $createdLocations,
             'created_customers' => $createdCustomers,
-            'created_suppliers' => $createdSuppliers,
         ];
     }
 
@@ -796,7 +778,6 @@ class InventoryController extends Controller
         // and -2 the non-serialised one, so the two line up when uploaded
         // together.
         $customer = Customer::where('is_active', true)->orderBy('name')->value('name') ?: '';
-        $supplier = Supplier::where('is_active', true)->orderBy('name')->value('name') ?: '';
 
         $location = Location::where('is_active', true)->orderBy('code')->first();
         $hubName = $location?->hub?->hub_name
@@ -804,18 +785,16 @@ class InventoryController extends Controller
             ?? '';
         $locationCode = $location->code ?? '';
 
-        $today = now()->toDateString();
-
         return [
             // Serialised with a PO, so booked in as Receiving. quantity is
             // left blank: a serialised row is always 1.
-            ['REPLACE-WITH-PART-NO-1', $today, 'PO-0001', $customer, $supplier, $hubName, 'REPLACE-WITH-SERIAL-1', '', $locationCode, ''],
+            ['REPLACE-WITH-PART-NO-1', 'PO-0001', $customer, $hubName, 'REPLACE-WITH-SERIAL-1', '', $locationCode, ''],
             // Serialised with no serial, stored as N/A-1, N/A-2, … Blank
             // client, so the default client. No PO, so Old Stock.
-            ['REPLACE-WITH-PART-NO-1', '', '', '', '', $hubName, self::BATCH_NO_SERIAL, '', $locationCode, 'Optional note'],
+            ['REPLACE-WITH-PART-NO-1', '', '', $hubName, self::BATCH_NO_SERIAL, '', $locationCode, 'Optional note'],
             // Non-serialised: these two rows are summed into one receipt of 15.
-            ['REPLACE-WITH-PART-NO-2', $today, 'PO-0001', $customer, $supplier, $hubName, '', '10', $locationCode, ''],
-            ['REPLACE-WITH-PART-NO-2', $today, 'PO-0001', $customer, $supplier, $hubName, '', '5', $locationCode, ''],
+            ['REPLACE-WITH-PART-NO-2', 'PO-0001', $customer, $hubName, '', '10', $locationCode, ''],
+            ['REPLACE-WITH-PART-NO-2', 'PO-0001', $customer, $hubName, '', '5', $locationCode, ''],
         ];
     }
 
@@ -894,18 +873,16 @@ class InventoryController extends Controller
                 ? $this->importItemStockRows($stockFile, $items['parts'])
                 : [
                     'serials' => 0, 'quantity_lines' => 0, 'quantity_units' => 0, 'skipped' => 0, 'reasons' => [],
-                    'created_locations' => [], 'created_customers' => [], 'created_suppliers' => [],
+                    'created_locations' => [], 'created_customers' => [],
                 ];
 
             return [$items, $stock];
         });
 
         $createdLocations = $stock['created_locations'];
-
-        // The items file counts the suppliers it creates; the stock file
-        // names them.
         $createdCustomers = $stock['created_customers'];
-        $createdSuppliers = $items['created_suppliers'] + count($stock['created_suppliers']);
+        // Only the items file creates suppliers; stock takes the part's own.
+        $createdSuppliers = $items['created_suppliers'];
 
         $skipped = $items['skipped'] + $stock['skipped'];
 
@@ -1082,7 +1059,12 @@ class InventoryController extends Controller
                 // so is_serialized is known without re-querying: a serial
                 // against a non-serialised part is refused below.
                 $seen[$key] = true;
-                $parts[$key] = ['id' => $created->id, 'is_serialized' => (bool) $created->is_serialized];
+                $parts[$key] = [
+                    'id' => $created->id,
+                    'is_serialized' => (bool) $created->is_serialized,
+                    // The stock file receives from this supplier.
+                    'supplier_id' => $created->supplier_id,
+                ];
                 $imported++;
             } catch (\Throwable $e) {
                 $skipped++;

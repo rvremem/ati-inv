@@ -35,13 +35,13 @@
                             </li>
                             <li>
                                 <strong>Non-serialised</strong> part &mdash; leave <code>serial_no</code> blank.
-                                Rows for the same part are <strong>added together</strong> into one quantity: two
-                                rows of <code>part01</code> save as <code>part01</code> qty <code>2</code>.
+                                A blank <code>quantity</code> counts as <code>1</code>. Rows for the same part are
+                                <strong>added together</strong> into one quantity: two rows of <code>part01</code>
+                                save as <code>part01</code> qty <code>2</code>.
                             </li>
                         </ul>
                         <p class="small mb-0 text-muted">
-                            The stock file contains no database ids. Supplier, client and hub are matched by
-                            name. <strong>A <code>location</code> code that isn't on file is created for you</strong>
+                            The stock file contains no database ids. Client and hub are matched by name. <strong>A <code>location</code> code that isn't on file is created for you</strong>
                             (active, in the row's hub). Every stock row receives stock into your hub exactly as the
                             Receive Parts screen would create it.
                         </p>
@@ -113,29 +113,30 @@
                                 </li>
                                 <li>
                                     <strong>Non-serialised parts:</strong> <code>serial_no</code> must be blank (or
-                                    <code>N/A</code>). <code>quantity</code> must be a whole number greater than zero;
-                                    left blank it counts as <code>1</code>. Rows are added together when they share the
-                                    same part, <code>hub</code>, <code>location</code>, <code>date_received</code>,
-                                    <code>ati_po</code>, <code>client</code> and <code>supplier</code>; rows that
-                                    differ in any of those are saved separately. There is no duplicate check, so
+                                    <code>N/A</code>). <code>quantity</code> must be a whole number greater than
+                                    zero; left blank it counts as <code>1</code>. Rows are added together when they share the same part,
+                                    <code>hub</code>, <code>location</code>, <code>ati_po</code> and
+                                    <code>client</code>; rows that differ in any of those are saved separately. There is no duplicate check, so
                                     uploading the same file twice <strong>adds the stock twice</strong>.
                                 </li>
                                 <li>
-                                    The stock file carries the same fields as the <strong>Receive Parts</strong>
-                                    screen. <code>part_no</code>, <code>hub</code> and <code>location</code> are
-                                    required on every row. A blank <code>date_received</code> falls back to today, and
-                                    <code>ati_po</code>, <code>supplier</code> and <code>remarks</code> may be left
-                                    empty. <strong>A blank <code>client</code> is saved as
+                                    <strong>Required on every stock row:</strong> <code>part_no</code>,
+                                    <code>hub</code>, <code>location</code>, and <code>serial_no</code> for a
+                                    serialised part. <code>ati_po</code> and <code>remarks</code> may
+                                    be left empty. <strong>A blank <code>client</code> is saved as
                                     <code>Automated Technologies Inc.</code></strong>
+                                    <br>
+                                    There is no date or supplier column: <strong>date received is today</strong>, and
+                                    the <strong>supplier is the one set on the part</strong> in Item Parts.
                                     <br>
                                     <strong>The status is set by <code>ati_po</code>:</strong> a row with a PO is
                                     booked in as <code>Receiving</code>; a row without one is booked in as
                                     <code>Old Stock</code>. There is no status column.
                                 </li>
                                 <li>
-                                    <code>hub</code>, <code>client</code> and <code>supplier</code> are matched by
-                                    name. The <code>hub</code> must already be on file; a <code>client</code> or
-                                    <code>supplier</code> that isn't is created for you (see below). The <code>location</code> is created if it isn't
+                                    <code>hub</code> and <code>client</code> are matched by name. The
+                                    <code>hub</code> must already be on file; a <code>client</code> that isn't is
+                                    created for you (see below). The <code>location</code> is created if it isn't
                                     on file; if it is, it must belong to the row&rsquo;s <code>hub</code>, which is
                                     what the filtered dropdown enforces on screen.
                                 </li>
@@ -146,7 +147,7 @@
                                     <strong>Inactive</strong> causes the row to be skipped.
                                 </li>
                                 <li>
-                                    In both files, a <code>supplier</code> not already on file is
+                                    In the items file, a <code>supplier</code> not already on file is
                                     <strong>created for you</strong> and set to Active, so an import never stalls on a
                                     supplier nobody has entered yet. In the stock file the same goes for a
                                     <code>client</code>. New ones are reported back with the result.
