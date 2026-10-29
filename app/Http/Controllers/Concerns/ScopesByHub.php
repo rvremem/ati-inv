@@ -129,6 +129,78 @@ trait ScopesByHub
     }
 
     /**
+     * Units of a part this user's hub can still request: received stock less
+     * what is already issued or waiting to be.
+     *
+     * Pending requests are subtracted as well as Out ones. They have not left
+     * the shelf, but they are spoken for — counting only Out let two people
+     * each request the same five units and both be accepted.
+     *
+     * Shared by the Request Parts form's "available" figure and the check on
+     * save, so what the form shows and what the server accepts cannot differ.
+     */
+    protected function requestableQuantity(int $itemPartId): int
+    {
+        $hubId = $this->hubScope();
+
+        $received = \Illuminate\Support\Facades\DB::table('receiving')
+            ->where('item_part_id', $itemPartId)
+            ->whereIn('status', \App\Http\Controllers\InventoryController::ON_HAND_STATUSES)
+            ->when($hubId !== null, fn ($q) => $q->where('hub_id', $hubId))
+            ->sum('quantity');
+
+        $claimed = \Illuminate\Support\Facades\DB::table('part_requests')
+            ->join('users', 'users.id', '=', 'part_requests.requested_by')
+            ->where('part_requests.item_part_id', $itemPartId)
+            ->whereIn('part_requests.status', ['Pending', 'Out'])
+            ->when($hubId !== null, fn ($q) => $q->where('users.hub_id', $hubId))
+            ->sum('part_requests.quantity');
+
+        return max(0, (int) $received - (int) $claimed);
+    }
+
+    /**
+     * Serials of a part this user's hub can still request: received into the
+     * hub, and whose latest movement leaves them on the shelf. A serial whose
+     * newest row is a Pending or Out request is spoken for; a Denied request
+     * is ignored, so the serial is offered again.
+     *
+     * The serial counterpart of requestableQuantity(), and shared the same
+     * way: the Request Parts dropdown lists these, and the save refuses any
+     * serial not among them.
+     *
+     * @return array<int,string>
+     */
+    protected function requestableSerials(int $itemPartId): array
+    {
+        $hubId = $this->hubScope();
+        $hubClause = $hubId === null ? '' : ' AND hub_id = ?';
+        $avail = "'" . implode("','", \App\Http\Controllers\InventoryController::ON_HAND_STATUSES) . "'";
+
+        $serials = \Illuminate\Support\Facades\DB::select("
+            WITH combined AS (
+                SELECT serial_no, status, created_at
+                FROM receiving
+                WHERE item_part_id = ? AND serial_no IS NOT NULL{$hubClause}
+                UNION ALL
+                SELECT serial_no, status, created_at
+                FROM part_requests
+                WHERE serial_no IS NOT NULL AND status != 'Denied'
+            ),
+            ranked AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (PARTITION BY serial_no ORDER BY created_at DESC) as rn
+                FROM combined
+            )
+            SELECT serial_no
+            FROM ranked
+            WHERE rn = 1 AND status IN ($avail)
+        ", $hubId === null ? [$itemPartId] : [$itemPartId, $hubId]);
+
+        return array_map(fn ($s) => $s->serial_no, $serials);
+    }
+
+    /**
      * Refuses a record that belongs to another hub.
      *
      * List filtering alone is not access control — the detail and edit routes

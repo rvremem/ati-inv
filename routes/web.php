@@ -144,8 +144,10 @@ Route::middleware('auth')->group(function () {
         Route::get('parts', [RequestController::class, 'partRequests'])->name('parts');
         Route::get('parts/create', [RequestController::class, 'partRequestCreate'])->name('part-create');
         Route::post('parts', [RequestController::class, 'partRequestStore'])->name('part-store');
-        Route::get('parts/{partRequest}/edit', [RequestController::class, 'partRequestEdit'])->name('part-edit');
-        Route::put('parts/{partRequest}', [RequestController::class, 'partRequestUpdate'])->name('part-update');
+        // No edit routes: there was never an edit page, and the update route
+        // let any user rewrite any request — part, quantity, serial, status —
+        // with no stock or ownership check. If editing is wanted, build it
+        // for the requester only, while Pending, with partRequestStore()'s checks.
         Route::post('parts/{partRequest}/approve', [RequestController::class, 'partRequestApprove'])->name('part-approve');
         Route::post('parts/{partRequest}/decline', [RequestController::class, 'partRequestDecline'])->name('part-decline');
 

@@ -66,16 +66,78 @@ class RequestController extends Controller
         $itemRemarks = $validated['item_remarks'] ?? [];
 
         // Resolved once for the whole request rather than per line.
-        $partNos = ItemPart::whereIn('id', $items)->pluck('part_no', 'id');
+        $parts = ItemPart::whereIn('id', $items)->get(['id', 'part_no', 'is_serialized'])->keyBy('id');
+        $partNos = $parts->pluck('part_no', 'id');
+
+        // Unserialised parts may not be requested beyond what is available.
+        // Summed per part across the form's rows, so splitting a request over
+        // two lines cannot get round it. Serialised parts are limited by the
+        // serial picker instead — each serial is one unit.
+        $wanted = [];
+        foreach ($items as $index => $itemId) {
+            if (! ($parts[$itemId]->is_serialized ?? false)) {
+                $wanted[$itemId] = ($wanted[$itemId] ?? 0) + (int) $quantities[$index];
+            }
+        }
+
+        $errors = [];
+        foreach ($wanted as $itemId => $qty) {
+            $available = $this->requestableQuantity((int) $itemId);
+
+            if ($qty > $available) {
+                $errors[] = "{$partNos[$itemId]}: requested {$qty}, only {$available} available.";
+            }
+        }
+
+        // A serial must be one the dropdown would offer now — in stock, in
+        // this hub, and not already Pending or Out — and may appear only once.
+        // The dropdown is loaded when the row is added, so without this two
+        // people who opened the form together could both request one unit,
+        // as could two rows of the same form. A blank serial is still allowed:
+        // the approver picks it at approval.
+        $serialsFor = [];
+        $seen = [];
+        foreach ($items as $index => $itemId) {
+            $serial = trim((string) ($serials[$index] ?? ''));
+
+            if ($serial === '') {
+                continue;
+            }
+
+            $partNo = $partNos[$itemId] ?? "ID {$itemId}";
+
+            if (isset($seen[mb_strtolower($serial)])) {
+                $errors[] = "{$partNo}: serial {$serial} is on more than one row.";
+                continue;
+            }
+            $seen[mb_strtolower($serial)] = true;
+
+            $serialsFor[$itemId] ??= array_map('mb_strtolower', $this->requestableSerials((int) $itemId));
+
+            if (! in_array(mb_strtolower($serial), $serialsFor[$itemId], true)) {
+                $errors[] = "{$partNo}: serial {$serial} is not available — already requested, issued, or not in stock.";
+            }
+        }
+
+        if ($errors) {
+            return back()->withInput()->withErrors(['quantity' => $errors]);
+        }
         $customerName = Customer::find($validated['customer_id'])?->name ?? '-';
 
         foreach ($items as $index => $itemId) {
+            // One serial is one unit. The form locks the field at 1, but that
+            // is only the browser; enforced here as well.
+            $serial = trim((string) ($serials[$index] ?? '')) ?: null;
+            if ($serial !== null) {
+                $quantities[$index] = 1;
+            }
+
             PartRequest::create([
                 'pick_date' => $validated['pick_date'],
                 'customer_id' => $validated['customer_id'],
                 'item_part_id' => $itemId,
                 'quantity' => $quantities[$index],
-                'serial_no' => $serials[$index] ?? null,
+                'serial_no' => $serial,
                 'remarks' => $itemRemarks[$index] ?? null,
                 'status' => 'Pending',
                 'requested_by' => auth()->id(),
@@ -86,38 +148,12 @@ class RequestController extends Controller
             ActivityLog::log('Requested Item', sprintf(
                 'Item No: %s | %s | Customer: %s',
                 $partNos[$itemId] ?? "ID {$itemId}",
-                ActivityLog::unitLabel($serials[$index] ?? null, (int) $quantities[$index]),
+                ActivityLog::unitLabel($serial, (int) $quantities[$index]),
                 $customerName
             ));
         }
 
         return redirect()->route('requests.parts')->with('success', 'Part request created successfully.');
-    }
-
-    public function partRequestEdit(PartRequest $partRequest)
-    {
-        $items = $this->partsInHubScope()->where('is_active', true)->get();
-        $customers = Customer::where('is_active', true)->get();
-        $locations = Location::where('is_active', true)->get();
-        return view('requests.parts.edit', compact('partRequest', 'items', 'customers', 'locations'));
-    }
-
-    public function partRequestUpdate(Request $request, PartRequest $partRequest)
-    {
-        $validated = $request->validate([
-            'pick_date' => 'required|date',
-            'customer_id' => 'required|exists:customers,id',
-            'item_part_id' => 'required|exists:item_parts,id',
-            'quantity' => 'required|integer|min:1',
-            'serial_no' => 'nullable',
-            'remarks' => 'nullable',
-            'mris_no' => 'nullable',
-            'location_id' => 'nullable|exists:locations,id',
-            'status' => 'required|in:Pending,Approved,Issued,Cancelled',
-        ]);
-
-        $partRequest->update($validated);
-        return redirect()->route('requests.parts')->with('success', 'Part request updated successfully.');
     }
 
     public function partRequestApprove(Request $request, PartRequest $partRequest)

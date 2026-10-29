@@ -2236,31 +2236,17 @@ class InventoryController extends Controller
     }
 
     /**
-     * On-hand quantity for a non-serialised part, scoped to the caller's hub.
+     * Requestable quantity for a non-serialised part, scoped to the caller's
+     * hub — the "available" figure on Request Parts.
      *
-     * Same arithmetic as stocksData()'s total_qty: everything received with
-     * status Receiving/Return, minus everything requested out — so this can
-     * never disagree with what Stock Levels shows for the part.
+     * Deliberately lower than Stock Levels' on-hand when requests are pending:
+     * those units are still on the shelf but already spoken for. See
+     * ScopesByHub::requestableQuantity(), which the save check also uses.
      */
     public function getPartOnHandQuantity($itemId)
     {
-        $hubId = $this->hubScope();
-
-        $received = DB::table('receiving')
-            ->where('item_part_id', $itemId)
-            ->whereIn('status', self::ON_HAND_STATUSES)
-            ->when($hubId !== null, fn($q) => $q->where('hub_id', $hubId))
-            ->sum('quantity');
-
-        $out = DB::table('part_requests')
-            ->join('users', 'users.id', '=', 'part_requests.requested_by')
-            ->where('part_requests.item_part_id', $itemId)
-            ->where('part_requests.status', 'Out')
-            ->when($hubId !== null, fn($q) => $q->where('users.hub_id', $hubId))
-            ->sum('part_requests.quantity');
-
         return response()->json([
-            'available_quantity' => max(0, (int) $received - (int) $out),
+            'available_quantity' => $this->requestableQuantity((int) $itemId),
         ]);
     }
 
@@ -2312,35 +2298,11 @@ class InventoryController extends Controller
 
     public function getAvailableSerials($itemId)
     {
-        // Get serials with their latest status (max created_at from both receiving and part_requests)
-        // Show only serials where latest status = 'Receiving' or 'Return'
-        $hub = $this->receivingHubClause();
-        $avail = "'" . implode("','", self::ON_HAND_STATUSES) . "'";
-
-        $serials = DB::select("
-            WITH combined AS (
-                SELECT serial_no, item_part_id, location_id, quantity, status, created_at
-                FROM receiving
-                WHERE item_part_id = ? AND serial_no IS NOT NULL{$hub}
-                UNION ALL
-                SELECT serial_no, NULL, NULL, NULL, status, created_at
-                FROM part_requests
-                WHERE serial_no IS NOT NULL AND status != 'Denied'
-            ),
-            ranked AS (
-                SELECT *,
-                       ROW_NUMBER() OVER (PARTITION BY serial_no ORDER BY created_at DESC) as rn
-                FROM combined
-            )
-            SELECT serial_no
-            FROM ranked
-            WHERE rn = 1 AND status IN ($avail)
-        ", [$itemId]);
-
-        $serialNumbers = array_map(fn($s) => $s->serial_no, $serials);
-
+        // Serials whose latest movement leaves them on the shelf, in the
+        // caller's hub. See ScopesByHub::requestableSerials(), which the
+        // Request Parts save also checks against.
         return response()->json([
-            'serials' => $serialNumbers,
+            'serials' => $this->requestableSerials((int) $itemId),
         ]);
     }
 
