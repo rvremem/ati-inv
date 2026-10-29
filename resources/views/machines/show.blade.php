@@ -21,6 +21,8 @@
         </div>
     </div>
 
+    <x-alert />
+
     <div class="row">
         <!-- Machine Details Card -->
         <div class="col-lg-6 mb-4">
@@ -88,12 +90,17 @@
         <!-- Machine Parts Card -->
         <div class="col-lg-6 mb-4">
             <div class="card border-0 shadow-sm h-100">
-                <div class="card-header bg-light border-bottom">
+                <div class="card-header bg-light border-bottom d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">
                         <i class="fas fa-cubes text-primary"></i>
                         Machine Parts
-                        <span class="badge bg-primary rounded-pill float-end">{{ $machine->parts->count() }}</span>
+                        <span class="badge bg-primary rounded-pill ms-1">{{ $machine->parts->count() }}</span>
                     </h5>
+                    {{-- return=show brings the user back here after saving; the
+                         Receiving screen links the same page without it. --}}
+                    <a href="{{ route('machines.add-part', ['machine' => $machine, 'return' => 'show']) }}" class="btn btn-primary btn-sm">
+                        <i class="fas fa-plus"></i> Add Parts
+                    </a>
                 </div>
                 <div class="card-body">
                     @if($machine->parts->count() > 0)

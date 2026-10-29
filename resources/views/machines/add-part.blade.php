@@ -12,6 +12,7 @@
         <div class="card-body">
             <form method="POST" action="{{ route('machines.store-part', $machine) }}">
                 @csrf
+                <input type="hidden" name="return" value="{{ $returnTo }}">
 
                 <div class="table-responsive mb-3">
                     <table class="table table-bordered no-datatable" id="partsTable">
@@ -44,7 +45,7 @@
     </div>
 </div>
 
-    <x-back-link :href="route('receiving.machines')" />
+    <x-back-link :href="$returnTo === 'show' ? route('machines.show', $machine) : route('receiving.machines')" />
 
 <script>
 let partRowCount = 0;

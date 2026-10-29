@@ -209,11 +209,22 @@ class MachineController extends Controller
         return redirect()->route('machines.index')->with('success', 'Machine deleted successfully.');
     }
 
-    public function addPart(Machine $machine)
+    public function addPart(Request $request, Machine $machine)
     {
         $items = ItemPart::all();
         $locations = Location::where('is_active', true)->get();
-        return view('machines.add-part', compact('machine', 'items', 'locations'));
+        $returnTo = $this->partFormReturn($request);
+        return view('machines.add-part', compact('machine', 'items', 'locations', 'returnTo'));
+    }
+
+    /**
+     * Where the Add Parts form goes back to: the machine's own page when opened
+     * from there, else Receiving, which linked it first. Whitelisted rather than
+     * taking a URL, so the field cannot be used as an open redirect.
+     */
+    private function partFormReturn(Request $request): string
+    {
+        return $request->input('return') === 'show' ? 'show' : 'receiving';
     }
 
     public function storePartForm(Request $request, Machine $machine)
@@ -263,7 +274,12 @@ class MachineController extends Controller
         }
 
         ActivityLog::log('Added Parts to Machine', "Machine: {$machine->serial_no}");
-        return redirect()->route('receiving.machines')->with('success', 'Parts added to machine successfully.');
+
+        $redirect = $this->partFormReturn($request) === 'show'
+            ? redirect()->route('machines.show', $machine)
+            : redirect()->route('receiving.machines');
+
+        return $redirect->with('success', 'Parts added to machine successfully.');
     }
 
     public function removePart(MachinePart $part)
