@@ -184,19 +184,26 @@ class DashboardController extends Controller
             });
     }
 
-    /** Inbound (received) vs Outbound (issued) counts per month, last 6 months. */
+    /** Receiving, Old Stock and Outbound (issued) counts per month, last 6 months. */
     private function monthlyFlow()
     {
         $from = now()->subMonths(5)->startOfMonth();
 
         // Scoped so the chart shows this user's branch, not the company.
+        // Old Stock is kept apart from Receiving: it is opening stock loaded
+        // in bulk, and folding it in would read as a month of deliveries.
         $inbound = $this->applyHubScope(DB::table('receiving'), 'receiving.hub_id')
-            ->where('status', 'Receiving')
+            ->whereIn('status', ['Receiving', 'Old Stock'])
             ->whereNotNull('date_received')
             ->where('date_received', '>=', $from)
-            ->groupBy(DB::raw("FORMAT(date_received, 'yyyy-MM')"))
-            ->selectRaw("FORMAT(date_received, 'yyyy-MM') as ym, COUNT(*) as c")
-            ->pluck('c', 'ym');
+            ->groupBy('status', DB::raw("FORMAT(date_received, 'yyyy-MM')"))
+            ->selectRaw("status, FORMAT(date_received, 'yyyy-MM') as ym, COUNT(*) as c")
+            ->get()
+            ->groupBy('status')
+            ->map(fn ($rows) => $rows->pluck('c', 'ym'));
+
+        $received = $inbound->get('Receiving', collect());
+        $oldStock = $inbound->get('Old Stock', collect());
 
         // part_requests has no hub of its own - attributed to the requester's.
         $outbound = $this->applyRequesterHubScope(DB::table('part_requests'))
@@ -207,12 +214,13 @@ class DashboardController extends Controller
             ->selectRaw("FORMAT(out_date, 'yyyy-MM') as ym, COUNT(*) as c")
             ->pluck('c', 'ym');
 
-        return collect(range(5, 0))->map(function ($i) use ($inbound, $outbound) {
+        return collect(range(5, 0))->map(function ($i) use ($received, $oldStock, $outbound) {
             $m = now()->subMonths($i);
             $key = $m->format('Y-m');
             return [
                 'm'   => $m->format('M'),
-                'in'  => (int) ($inbound[$key] ?? 0),
+                'in'  => (int) ($received[$key] ?? 0),
+                'old' => (int) ($oldStock[$key] ?? 0),
                 'out' => (int) ($outbound[$key] ?? 0),
             ];
         })->values();

@@ -147,13 +147,14 @@
             <div class="col-lg-7 d-flex flex-column">
                 <div class="dash-card">
                     <div class="hd">
-                        <div class="t"><span class="dot" style="background:#4f46e5"></span>Inbound vs Outbound</div>
+                        <div class="t"><span class="dot" style="background:#4f46e5"></span>Receiving, Old Stock &amp; Outbound</div>
                         <div class="sub">Last 6 months</div>
                     </div>
                     <div class="bd">
-                        <svg id="flowChart" viewBox="0 0 560 250" role="img" aria-label="Inbound versus outbound per month"></svg>
+                        <svg id="flowChart" viewBox="0 0 560 250" role="img" aria-label="Receiving, old stock and outbound per month"></svg>
                         <div class="legend">
-                            <span><i style="background:#10b981"></i>Inbound (received)</span>
+                            <span><i style="background:#10b981"></i>Receiving</span>
+                            <span><i style="background:#f59e0b"></i>Old Stock</span>
                             <span><i style="background:#4f46e5"></i>Outbound (issued)</span>
                         </div>
                     </div>
@@ -470,10 +471,13 @@
         if (!svg || !flow.length) return;
         const W = 560, H = 250, padL = 38, padR = 8, padT = 14, padB = 26;
         const plotW = W - padL - padR, plotH = H - padT - padB, base = padT + plotH;
-        let max = Math.max(1, ...flow.map(d => Math.max(d.in, d.out)));
+        let max = Math.max(1, ...flow.map(d => Math.max(d.in, d.old, d.out)));
         const step = Math.pow(10, Math.floor(Math.log10(max)));
         max = Math.ceil(max / step) * step;
         const ticks = 4;
+        // Counts are whole numbers: below 4 the ticks would be fractions that
+        // round to a repeated 0/1 axis, so stretch to one unit per tick.
+        max = Math.max(max, ticks);
         for (let i = 0; i <= ticks; i++) {
             const v = max / ticks * i, y = base - (v / max) * plotH;
             svg.appendChild(el('line', { x1: padL, y1: y, x2: W - padR, y2: y, stroke: '#eef2f7', 'stroke-width': 1 }));
@@ -489,8 +493,9 @@
                 r.addEventListener('mousemove', moveTT); r.addEventListener('mouseleave', hideTT);
                 svg.appendChild(r);
             };
-            mk(d.in, cx - bw - gap / 2, '#10b981', 'Inbound');
-            mk(d.out, cx + gap / 2, '#4f46e5', 'Outbound');
+            mk(d.in, cx - bw * 1.5 - gap, '#10b981', 'Receiving');
+            mk(d.old, cx - bw / 2, '#f59e0b', 'Old Stock');
+            mk(d.out, cx + bw / 2 + gap, '#4f46e5', 'Outbound');
             const lx = el('text', { x: cx, y: base + 17, 'text-anchor': 'middle', fill: '#94a3b8', 'font-size': 11 }); lx.textContent = d.m; svg.appendChild(lx);
         });
     })();
