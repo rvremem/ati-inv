@@ -21,7 +21,8 @@
                         <p class="small mb-2">
                             <strong>machines.csv</strong> defines the machines. <strong>machine_parts.csv</strong>
                             hangs parts off them: its <code>machine_serial_no</code> column must match a
-                            <code>serial_no</code> from the machines file you upload alongside it.
+                            <code>serial_no</code> from the machines file you upload alongside it, or a machine
+                            already in the system. Upload either file on its own, or both together.
                         </p>
                         <p class="small mb-0 text-muted">
                             Neither file contains a database id. Category and supplier are matched by their
@@ -43,7 +44,7 @@
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label for="machines_file" class="form-label">
-                                    Machines CSV <span class="text-danger">*</span>
+                                    Machines CSV
                                 </label>
                                 <input
                                     type="file"
@@ -51,7 +52,6 @@
                                     id="machines_file"
                                     name="machines_file"
                                     accept=".csv,.txt"
-                                    required
                                 >
                                 @error('machines_file')
                                     <div class="invalid-feedback">{{ $message }}</div>
@@ -83,9 +83,16 @@
                             <strong>Before you upload:</strong>
                             <ul class="mb-0 small mt-2">
                                 <li>
-                                    A <code>serial_no</code> <strong>already on file is skipped, and so are its
-                                    parts</strong> &mdash; this upload only ever creates machines, it never edits
-                                    one. Use Add Parts on the machine itself for machines already in the system.
+                                    A machine <code>serial_no</code> <strong>already on file is skipped</strong>
+                                    &mdash; this upload only ever creates machines, it never edits one.
+                                </li>
+                                <li>
+                                    <strong>Parts go on any machine that exists</strong> &mdash; one in this
+                                    upload's machines file, or one already in the system. A part row naming a
+                                    serial that is in neither is skipped. A part <code>serial_no</code> already
+                                    installed on that machine is skipped too. <strong>A part without a serial that
+                                    is already on the machine has the new <code>quantity</code> added to it</strong>
+                                    &mdash; so uploading the same parts file twice doubles those quantities.
                                 </li>
                                 <li>
                                     <code>serial_no</code>, <code>description</code> and <code>category</code> are
@@ -112,9 +119,9 @@
                                     Locations page afterwards.
                                 </li>
                                 <li>
-                                    The parts file is optional. Without it you get machines with no parts, which
-                                    you can fill in later. A parts row's new location is created in the hub of
-                                    the machine it belongs to.
+                                    Either file is optional, but upload at least one. Machines alone arrive with
+                                    no parts, which a later parts-only upload can fill in. A parts row's new
+                                    location is created in the hub of the machine it belongs to.
                                 </li>
                                 <li>
                                     Skipped rows are reported back with the reason. The rest still import.

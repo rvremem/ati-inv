@@ -59,6 +59,25 @@ class MachineController extends Controller
         $this->middleware('auth');
     }
 
+    /**
+     * Same rule as Item Parts (InventoryController::canManageItems): every role
+     * but Engineer. The upload creates categories, suppliers, customers,
+     * locations and catalogue parts as a side effect, so it is gated at least
+     * as tightly as the catalogue it writes into.
+     */
+    private function canBatchUpload(): bool
+    {
+        $user = auth()->user();
+
+        return $user && ! $user->isEngineer();
+    }
+
+    /** Guards the routes — hiding the button alone leaves them open. */
+    private function authorizeBatchUpload(): void
+    {
+        abort_unless($this->canBatchUpload(), 403, 'You are not allowed to batch upload machines.');
+    }
+
     public function index()
     {
         // machines.status carries the request lifecycle (Pending/Out/Return), so
@@ -67,7 +86,10 @@ class MachineController extends Controller
             ->orderBy('serial_no')
             ->get();
 
-        return view('machines.index', compact('machines'));
+        return view('machines.index', [
+            'machines'       => $machines,
+            'canBatchUpload' => $this->canBatchUpload(),
+        ]);
     }
 
     public function create()
@@ -264,6 +286,8 @@ class MachineController extends Controller
 
     public function batchUpload()
     {
+        $this->authorizeBatchUpload();
+
         return view('machines.batch-upload', [
             'machineColumns' => self::MACHINE_BATCH_COLUMNS,
             'partColumns'    => self::MACHINE_PART_BATCH_COLUMNS,
@@ -274,11 +298,15 @@ class MachineController extends Controller
 
     public function machineTemplateCsv()
     {
+        $this->authorizeBatchUpload();
+
         return $this->streamCsv(self::MACHINE_BATCH_COLUMNS, $this->machineSampleRows(), 'machines_template.csv');
     }
 
     public function machinePartTemplateCsv()
     {
+        $this->authorizeBatchUpload();
+
         return $this->streamCsv(self::MACHINE_PART_BATCH_COLUMNS, $this->machinePartSampleRows(), 'machine_parts_template.csv');
     }
 
@@ -447,16 +475,28 @@ class MachineController extends Controller
      * Two-file import: machines.csv defines the machines, machine_parts.csv
      * hangs parts off them by serial number.
      *
+     * Either file may be uploaded on its own. Parts attach to a machine from
+     * the machines file in the same upload, or to one already on file — so a
+     * machine can be loaded now and its parts later.
+     *
      * Wrapped in one transaction so a file that blows up halfway does not leave
      * machines behind without their parts. Skips are deliberate and do not roll
      * anything back; only an unexpected exception does.
      */
     public function batchStore(Request $request)
     {
+        $this->authorizeBatchUpload();
+
         $request->validate([
-            'machines_file' => 'required|file|mimes:csv,txt',
+            'machines_file' => 'nullable|file|mimes:csv,txt',
             'parts_file'    => 'nullable|file|mimes:csv,txt',
         ]);
+
+        if (! $request->hasFile('machines_file') && ! $request->hasFile('parts_file')) {
+            return back()->withErrors([
+                'machines_file' => 'Upload at least one file — machines, machine parts, or both.',
+            ]);
+        }
 
         $machinesFile = $request->file('machines_file');
         $partsFile    = $request->file('parts_file');
@@ -467,11 +507,16 @@ class MachineController extends Controller
             $locations = Location::get()
                 ->mapWithKeys(fn ($l) => [mb_strtolower(trim($l->code)) => $l]);
 
-            $machines = $this->importMachineRows($machinesFile, $locations);
+            $machines = $machinesFile
+                ? $this->importMachineRows($machinesFile, $locations)
+                : [
+                    'imported' => 0, 'skipped' => 0, 'reasons' => [], 'serials' => [], 'machineHubs' => [],
+                    'createdCustomers' => [], 'createdLocations' => [], 'createdCategories' => [], 'createdSuppliers' => [],
+                ];
 
             $parts = $partsFile
                 ? $this->importMachinePartRows($partsFile, $machines['serials'], $machines['machineHubs'], $locations)
-                : ['imported' => 0, 'skipped' => 0, 'created_parts' => 0, 'createdLocations' => [], 'reasons' => []];
+                : ['imported' => 0, 'topped_up' => 0, 'skipped' => 0, 'created_parts' => 0, 'createdLocations' => [], 'reasons' => []];
 
             return [$machines, $parts];
         });
@@ -484,6 +529,7 @@ class MachineController extends Controller
         ActivityLog::log(
             'Batch Uploaded Machines',
             "{$machines['imported']} machine(s), {$parts['imported']} part(s), "
+            . "{$parts['topped_up']} added to existing quantity, "
             . count($machines['createdCustomers']) . ' new customer(s), '
             . count($machines['createdCategories']) . ' new category(ies), '
             . count($machines['createdSuppliers']) . ' new supplier(s), '
@@ -545,7 +591,11 @@ class MachineController extends Controller
         // serial_no carries a unique index — it is the machine's natural key,
         // which is both what makes a row a duplicate and what the parts file
         // points at.
-        $onFile = Machine::pluck('serial_no')->map(fn ($s) => mb_strtolower(trim($s)))->flip();
+        //
+        // Read past the hub scope: the unique index spans every branch, so a
+        // serial filed in another hub has to be skipped here too — otherwise
+        // the insert throws and rolls back the whole upload.
+        $onFile = Machine::withoutGlobalScope('hub')->pluck('serial_no')->map(fn ($s) => mb_strtolower(trim($s)))->flip();
 
         $serials = [];
         $machineHubs = [];
@@ -728,7 +778,9 @@ class MachineController extends Controller
 
     /**
      * @param array<string,int>      $serials     lower-cased serial => machines.id, from
-     *                                            the machines file just imported.
+     *                                            the machines file just imported (empty
+     *                                            for a parts-only upload). A serial not in
+     *                                            here is looked up among existing machines.
      * @param array<string,int|null> $machineHubs the hub each of those machines was filed in.
      * @param Collection<string,Location> $locations shared with the machines import
      *
@@ -750,10 +802,34 @@ class MachineController extends Controller
         $catalogue = ItemPart::pluck('id', 'part_no')
             ->mapWithKeys(fn ($id, $partNo) => [mb_strtolower(trim($partNo)) => $id]);
 
-        $onFile = Machine::pluck('id', 'serial_no')
-            ->mapWithKeys(fn ($id, $s) => [mb_strtolower(trim($s)) => $id]);
+        // Machines already in the system, for a parts row whose machine is not
+        // in this upload's machines file. The model's hub scope applies, so a
+        // restricted user can only add parts to their own branch's machines.
+        $onFile = Machine::get(['id', 'serial_no', 'hub_id'])
+            ->mapWithKeys(fn ($m) => [mb_strtolower(trim($m->serial_no)) => $m]);
+
+        // Serials already installed, per machine and part, so uploading the
+        // same parts file twice does not install a serialised part twice.
+        // Unserialised rows cannot be told apart from a genuine second batch,
+        // so they are not checked.
+        $installed = MachinePart::whereNotNull('serial_no')
+            ->get(['machine_id', 'item_part_id', 'serial_no'])
+            ->mapWithKeys(fn ($p) => ["{$p->machine_id}|{$p->item_part_id}|" . mb_strtolower(trim($p->serial_no)) => true]);
+
+        // Unserialised parts still fitted, per machine and part. A second batch
+        // of the same part is added to this row's quantity instead of becoming
+        // a row of its own. Only fitted rows: a batch already pulled (Pending
+        // Out / Out) is gone from the machine, so new units start a fresh row.
+        // Oldest row wins when there are several, so the choice is stable.
+        $loose = MachinePart::whereNull('serial_no')
+            ->where('status', MachinePart::STATUS_ASSEMBLED)
+            ->orderBy('id')
+            ->get()
+            ->reverse()
+            ->mapWithKeys(fn ($p) => ["{$p->machine_id}|{$p->item_part_id}" => $p]);
 
         $imported = 0;
+        $toppedUp = 0;
         $skipped = 0;
         $createdParts = 0;
         $createdLocations = [];
@@ -778,14 +854,15 @@ class MachineController extends Controller
                 continue;
             }
 
+            // This upload's machines first, then the ones already on file.
             $machineKey = mb_strtolower($machineSerial);
-            $machineId = $serials[$machineKey] ?? null;
+            $existing = $onFile->get($machineKey);
+            $machineId = $serials[$machineKey] ?? $existing?->id;
+            $machineHub = $machineHubs[$machineKey] ?? $existing?->hub_id;
 
             if (! $machineId) {
                 $skipped++;
-                $reasons[] = $onFile->has($machineKey)
-                    ? "{$machineSerial}: machine was already on file, so its parts were skipped too"
-                    : "{$machineSerial}: no machine with that serial in the machines file";
+                $reasons[] = "{$machineSerial}: no machine with that serial — upload it in the machines file first";
                 continue;
             }
 
@@ -795,7 +872,7 @@ class MachineController extends Controller
             if ($data['location'] !== '') {
                 [$locationId, $error] = $this->resolveOrCreateLocation(
                     $data['location'],
-                    $forcedHub ?? ($machineHubs[$machineKey] ?? null),
+                    $forcedHub ?? $machineHub,
                     $locations,
                     $createdLocations
                 );
@@ -810,6 +887,15 @@ class MachineController extends Controller
             // The id the spreadsheet could never supply. Resolve, or mint.
             $partKey = mb_strtolower($partNo);
             $itemPartId = $catalogue->get($partKey);
+
+            // A part not yet in the catalogue cannot already be installed, so
+            // this only needs checking for a known part number.
+            $installedKey = "{$machineId}|{$itemPartId}|" . mb_strtolower($data['serial_no']);
+            if ($itemPartId && $data['serial_no'] !== '' && $installed->has($installedKey)) {
+                $skipped++;
+                $reasons[] = "{$machineSerial}/{$partNo}: serial {$data['serial_no']} is already installed on this machine";
+                continue;
+            }
 
             if (! $itemPartId) {
                 $itemPart = ItemPart::create([
@@ -832,11 +918,21 @@ class MachineController extends Controller
             }
 
             $quantity = (int) ($data['quantity'] ?? 0);
+            $quantity = $quantity > 0 ? $quantity : 1;
 
-            MachinePart::create([
+            // The existing row keeps its own location, purpose and remarks;
+            // only the count changes.
+            $looseKey = "{$machineId}|{$itemPartId}";
+            if ($data['serial_no'] === '' && $loose->has($looseKey)) {
+                $loose->get($looseKey)->increment('quantity', $quantity);
+                $toppedUp++;
+                continue;
+            }
+
+            $machinePart = MachinePart::create([
                 'machine_id'   => $machineId,
                 'item_part_id' => $itemPartId,
-                'quantity'     => $quantity > 0 ? $quantity : 1,
+                'quantity'     => $quantity,
                 'serial_no'    => $data['serial_no'] ?: null,
                 'location_id'  => $locationId,
                 'purpose'      => $data['purpose'] ?: null,
@@ -846,11 +942,19 @@ class MachineController extends Controller
                 'assembled_at' => now(),
             ]);
 
+            if ($data['serial_no'] !== '') {
+                $installed->put("{$machineId}|{$itemPartId}|" . mb_strtolower($data['serial_no']), true);
+            } else {
+                // So the same part twice in one file also lands on one row.
+                $loose->put($looseKey, $machinePart);
+            }
+
             $imported++;
         }
 
         return [
             'imported'         => $imported,
+            'topped_up'        => $toppedUp,
             'skipped'          => $skipped,
             'created_parts'    => $createdParts,
             'createdLocations' => $createdLocations,
@@ -869,6 +973,10 @@ class MachineController extends Controller
     private function batchSummary(array $machines, array $parts, array $createdLocations): string
     {
         $message = "Imported {$machines['imported']} machine(s) and {$parts['imported']} part(s).";
+
+        if ($parts['topped_up'] > 0) {
+            $message .= " {$parts['topped_up']} part row(s) without a serial were added to the quantity already on the machine.";
+        }
 
         if ($parts['created_parts'] > 0) {
             $message .= " {$parts['created_parts']} new item(s) added to the parts catalogue.";

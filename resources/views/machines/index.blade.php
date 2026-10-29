@@ -10,9 +10,11 @@
             <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#categoryModal">
                 <i class="fas fa-plus"></i> Add Category
             </button>
-            <a href="{{ route('machines.batch-upload') }}" class="btn btn-outline-primary">
-                <i class="fas fa-upload"></i> Batch Upload
-            </a>
+            @if ($canBatchUpload)
+                <a href="{{ route('machines.batch-upload') }}" class="btn btn-outline-primary">
+                    <i class="fas fa-upload"></i> Batch Upload
+                </a>
+            @endif
             <a href="{{ route('machines.create') }}" class="btn btn-primary">
                 <i class="fas fa-plus"></i> Add Machine
             </a>
