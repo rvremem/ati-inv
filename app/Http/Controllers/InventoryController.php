@@ -73,6 +73,21 @@ class InventoryController extends Controller
      */
     public const BATCH_NO_SERIAL = 'N/A';
 
+    /**
+     * What a serial in the stock file may contain: letters, digits, and
+     * / - . + (two serials joined by / or ., or vendor formats such as
+     * 465824T+1341C40524). Anything else — spaces, brackets, colons — is a
+     * note typed into the cell, e.g. "(SN:08GAPSTZ" or "…loc:R2BL1)", and the
+     * row is skipped rather than saved with a serial nobody can search for.
+     */
+    public const BATCH_SERIAL_PATTERN = '/^[A-Za-z0-9\/\-.+]+$/';
+
+    /**
+     * A serial Excel has turned into a rounded number, e.g. 2.4E+17. The real
+     * digits are gone, so the row is skipped.
+     */
+    public const BATCH_MANGLED_SERIAL_PATTERN = '/^\d+(\.\d+)?E\+\d+$/i';
+
     public const ITEM_BATCH_COLUMNS = [
         'part_no',
         'description',
@@ -337,7 +352,13 @@ class InventoryController extends Controller
             $data = $this->rowToPayload($header, $row, self::ITEM_STOCK_BATCH_COLUMNS);
             $serialKey = mb_strtolower(trim($data['serial_no'] ?? ''));
 
-            if ($data !== null && $serialKey !== '' && $serialKey !== $noSerialKey) {
+            // Only a serial that will be accepted counts; a messy one is
+            // skipped below and must not switch the part on its own.
+            $serialRaw = trim($data['serial_no'] ?? '');
+
+            if ($data !== null && $serialKey !== '' && $serialKey !== $noSerialKey
+                && preg_match(self::BATCH_SERIAL_PATTERN, $serialRaw)
+                && ! preg_match(self::BATCH_MANGLED_SERIAL_PATTERN, $serialRaw)) {
                 $serialisedInFile[mb_strtolower(trim($data['part_no']))] = true;
             }
         }
@@ -437,6 +458,18 @@ class InventoryController extends Controller
                 }
 
                 if (! $noSerial) {
+                    if (preg_match(self::BATCH_MANGLED_SERIAL_PATTERN, $serial)) {
+                        $skipped++;
+                        $reasons[] = "{$label}: serial_no '{$serial}' was rounded by Excel — re-enter it with the column formatted as Text";
+                        continue;
+                    }
+
+                    if (! preg_match(self::BATCH_SERIAL_PATTERN, $serial)) {
+                        $skipped++;
+                        $reasons[] = "{$label}: serial_no '{$serial}' contains notes or spaces — only letters, digits and / - . + are allowed";
+                        continue;
+                    }
+
                     $label = $serial;
 
                     if (isset($seen[$serialKey])) {
@@ -452,8 +485,14 @@ class InventoryController extends Controller
                     }
                 }
             } else {
-                // A real serial here cannot happen: such a part was switched
-                // to serialised above. N/A is ignored.
+                // A valid serial would have switched the part to serialised
+                // above, so one still here is messy: skipped like any other.
+                // N/A is ignored.
+                if ($serial !== '' && ! $noSerial) {
+                    $skipped++;
+                    $reasons[] = "{$label}: serial_no '{$serial}' contains notes or spaces, or was rounded by Excel";
+                    continue;
+                }
 
                 // Blank counts as 1, so two bare rows of a part make qty 2.
                 $qtyRaw = trim($data['quantity'] ?? '');
@@ -502,6 +541,15 @@ class InventoryController extends Controller
             if ($locationCode === '') {
                 $skipped++;
                 $reasons[] = "{$label}: location is required";
+                continue;
+            }
+
+            // "R2AL4 & SMART MIXED L4" or "R2BL1/R2BL3" names two shelves; a
+            // unit sits on one, so the row is skipped rather than a combined
+            // location created.
+            if (preg_match('/[&\/]/', $locationCode)) {
+                $skipped++;
+                $reasons[] = "{$label}: location '{$locationCode}' names more than one location — use one";
                 continue;
             }
 
@@ -672,6 +720,7 @@ class InventoryController extends Controller
         // kept, joined, so none is lost in the merge.
         $quantityLines = 0;
         $quantityUnits = 0;
+        $quantityRows = 0;
 
         foreach ($groups as $group) {
             try {
@@ -681,6 +730,7 @@ class InventoryController extends Controller
 
                 $quantityLines++;
                 $quantityUnits += $group['attributes']['quantity'];
+                $quantityRows += $group['rows'];
             } catch (\Throwable $e) {
                 $skipped += $group['rows'];
                 $reasons[] = "{$group['label']}: {$e->getMessage()}";
@@ -691,6 +741,8 @@ class InventoryController extends Controller
             'serials' => $serials,
             'quantity_lines' => $quantityLines,
             'quantity_units' => $quantityUnits,
+            // File rows behind those lines, for the summary's row count.
+            'quantity_rows' => $quantityRows,
             'skipped' => $skipped,
             'reasons' => $reasons,
             'created_locations' => $createdLocations,
@@ -927,7 +979,8 @@ class InventoryController extends Controller
             $stock = $stockFile
                 ? $this->importItemStockRows($stockFile, $items['parts'])
                 : [
-                    'serials' => 0, 'quantity_lines' => 0, 'quantity_units' => 0, 'skipped' => 0, 'reasons' => [],
+                    'serials' => 0, 'quantity_lines' => 0, 'quantity_units' => 0, 'quantity_rows' => 0,
+                    'skipped' => 0, 'reasons' => [],
                     'created_locations' => [], 'created_customers' => [], 'switched_parts' => [],
                 ];
 
@@ -951,39 +1004,31 @@ class InventoryController extends Controller
                 . count($createdLocations) . ' location(s) created'
         );
 
-        // Locations and clients are listed by name so a typo ("A-01 " vs
-        // "A01"), which now makes a new entry instead of failing the row, is
-        // easy to spot.
-        $extra = trim(
-            ($createdSuppliers > 0 ? "{$createdSuppliers} new supplier(s) added to the Suppliers list. " : '')
-                . (! empty($createdCustomers)
-                    ? count($createdCustomers) . ' new client(s) created: '
-                        . implode(', ', array_slice($createdCustomers, 0, 5))
-                        . (count($createdCustomers) > 5 ? ', …' : '') . '. '
-                    : '')
-                . (! empty($stock['switched_parts'])
-                    ? count($stock['switched_parts']) . ' part(s) marked serialised because the file lists serials for them: '
-                        . implode(', ', array_slice($stock['switched_parts'], 0, 5))
-                        . (count($stock['switched_parts']) > 5 ? ', …' : '') . '. '
-                    : '')
-                . ($stock['serials'] > 0 ? "{$stock['serials']} serial(s) received into stock. " : '')
-                . ($stock['quantity_lines'] > 0
-                    ? "{$stock['quantity_lines']} quantity line(s) received into stock ({$stock['quantity_units']} unit(s)). "
-                    : '')
-                . (! empty($createdLocations)
-                    ? count($createdLocations) . ' new location(s) created: '
-                        . implode(', ', array_slice($createdLocations, 0, 5))
-                        . (count($createdLocations) > 5 ? ', …' : '') . '.'
-                    : '')
-        );
+        // Kept short on purpose: what came in, split by kind, and which rows
+        // did not. New clients, locations and parts switched to serialised
+        // are each in the activity log, so they are left out here.
+        $rows = $stock['serials'] + $stock['quantity_rows'];
 
-        return redirect()->route('inventory.items')->with('success', $this->batchSummary(
-            'item',
-            $items['imported'],
-            $skipped,
-            array_merge($items['reasons'], $stock['reasons']),
-            $extra
-        ));
+        $message = ($items['imported'] > 0 ? number_format($items['imported']) . ' part(s) added. ' : '')
+            . 'Imported ' . number_format($rows) . ' row(s): '
+            . number_format($stock['serials']) . ' serialised, '
+            . number_format($stock['quantity_rows']) . ' not serialised.';
+
+        if ($skipped > 0) {
+            // Each reason starts with the row's serial or part number (e.g.
+            // "5BXRA0D4D6Y0BX: listed twice…"); only that part is shown.
+            $labels = array_map(
+                fn($reason) => explode(': ', $reason, 2)[0],
+                array_merge($items['reasons'], $stock['reasons'])
+            );
+            $shown = array_slice($labels, 0, 20);
+
+            $message .= ' Skipped ' . number_format($skipped) . ': ' . implode(', ', $shown)
+                . (count($labels) > count($shown) ? ', and ' . (count($labels) - count($shown)) . ' more' : '')
+                . '.';
+        }
+
+        return redirect()->route('inventory.items')->with('success', $message);
     }
 
     /**

@@ -23,8 +23,24 @@ trait ImportsCsv
      */
     protected function readCsv(UploadedFile $file): array
     {
-        $lines = file($file->getRealPath(), FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
-        $records = array_map(fn ($line) => str_getcsv($line, ',', '"', '\\'), $lines);
+        // Read record by record with fgetcsv rather than line by line: a cell
+        // typed with Alt+Enter in Excel is saved as a quoted value containing
+        // a line break, and splitting on lines cut such a row into two halves
+        // that both failed the column count. rowToPayload() trims the break.
+        $records = [];
+        $handle = fopen($file->getRealPath(), 'r');
+
+        if ($handle !== false) {
+            while (($row = fgetcsv($handle, 0, ',', '"', '\\')) !== false) {
+                // A blank line comes back as [null]; skipped, as before.
+                if ($row !== [null]) {
+                    $records[] = $row;
+                }
+            }
+
+            fclose($handle);
+        }
+
         $header = array_map('trim', array_shift($records) ?: []);
 
         if (isset($header[0])) {

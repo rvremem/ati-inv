@@ -141,6 +141,15 @@
                                     what the filtered dropdown enforces on screen.
                                 </li>
                                 <li>
+                                    <strong>Messy rows are skipped</strong> and listed with the reason:
+                                    a <code>serial_no</code> with notes, spaces or brackets in it (e.g.
+                                    <code>(SN:08GAPSTZ</code>, <code>&hellip;loc:R2BL1)</code>) &mdash; only letters,
+                                    digits and <code>/ - . +</code> are allowed; a serial Excel rounded to a number
+                                    such as <code>2.4E+17</code> (format the column as Text before typing); and a
+                                    <code>location</code> naming two places with <code>&amp;</code> or <code>/</code>
+                                    (e.g. <code>R2BL1/R2BL3</code>). A line break inside a cell is fine.
+                                </li>
+                                <li>
                                     <strong>Same shelf code at another hub:</strong> location codes are unique across
                                     all hubs, so when a code such as <code>R2AL1</code> already belongs to another hub,
                                     the row's hub is put in front &mdash; <code>R2AL1</code> at Cebu becomes
