@@ -12,9 +12,9 @@ use App\Models\Location;
 use App\Models\Customer;
 use App\Models\Role;
 use App\Models\User;
-use App\Notifications\NewRequestSubmitted;
+use App\Mail\RequestSubmitted;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Http\Request;
 
 class RequestController extends Controller
@@ -528,7 +528,10 @@ class RequestController extends Controller
     }
 
     /**
-     * Email every active Developer, Admin and SA that a request is waiting.
+     * Send one email that a request is waiting: Admins and SAs (the approvers)
+     * as To, Developers and the requester as CC. If there is no approver yet,
+     * the Developers move up to To so the email still has a main recipient.
+     *
      * The request is already saved by now, so a mail failure (SMTP down, bad
      * credentials) is logged rather than thrown — it must not turn a
      * successful submission into an error page.
@@ -539,19 +542,37 @@ class RequestController extends Controller
             return;
         }
 
-        $roleIds = array_filter(array_map([Role::class, 'idForCode'], ['Developer', 'Admin', 'SA']));
-
-        $recipients = User::whereIn('role_id', $roleIds)
+        $emailsFor = fn (array $codes) => User::whereIn('role_id', array_filter(array_map([Role::class, 'idForCode'], $codes)))
             ->where('is_active', true)
             ->whereNotNull('email')
-            ->get();
+            ->pluck('email')
+            ->unique()
+            ->values();
 
-        if ($recipients->isEmpty()) {
+        $to = $emailsFor(['Admin', 'SA']);
+        $cc = $emailsFor(['Developer']);
+
+        if ($to->isEmpty()) {
+            [$to, $cc] = [$cc, collect()];
+        }
+
+        if ($to->isEmpty()) {
             return;
         }
 
+        // The requester gets a copy as their record of what was submitted.
+        if ($requesterEmail = auth()->user()->email) {
+            $cc->push($requesterEmail);
+        }
+
+        // No address twice — e.g. an Admin raising their own request is
+        // already in To.
+        $cc = $cc->unique()->diff($to)->values();
+
         try {
-            Notification::send($recipients, new NewRequestSubmitted($type, auth()->user(), $headers, $rows, $details));
+            Mail::to($to->all())
+                ->cc($cc->all())
+                ->send(new RequestSubmitted($type, auth()->user(), $headers, $rows, $details));
         } catch (\Throwable $e) {
             Log::error("Request notification email failed: {$e->getMessage()}");
         }

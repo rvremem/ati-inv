@@ -3,7 +3,7 @@
     $cell = fn ($value) => str_replace(['|', "\r", "\n"], ['\|', ' ', ' '], (string) $value);
 @endphp
 <x-mail::message>
-# Hello {{ $recipient->name }},
+# Hello,
 
 **{{ $requester->name }}** submitted a {{ $type }} request that needs approval.
 
@@ -23,7 +23,8 @@
 Review Pending Approvals
 </x-mail::button>
 
-Submitted {{ now()->format('M d, Y h:i A') }}.
+{{-- The app clock is UTC; readers are in the Philippines. --}}
+Submitted {{ now()->timezone('Asia/Manila')->format('M d, Y h:i A') }}.
 
 Regards,<br>
 {{ config('app.name') }}
