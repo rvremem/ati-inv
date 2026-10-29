@@ -232,16 +232,17 @@
                 <h5 class="modal-title">Decline Machine Part Request</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body">
-                <p>Are you sure you want to decline this machine part request? The part status will be reset to <strong>available</strong>.</p>
-            </div>
-            <div class="modal-footer">
-                <form id="machinePartDeclineForm" method="POST">
-                    @csrf
+            <form id="machinePartDeclineForm" method="POST">
+                @csrf
+                <div class="modal-body">
+                    <p>Are you sure you want to decline this machine part request? The part status will be reset to <strong>available</strong>.</p>
+                    @include('requests.partials.decline-remarks')
+                </div>
+                <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="submit" class="btn btn-danger">Decline</button>
-                </form>
-            </div>
+                </div>
+            </form>
         </div>
     </div>
 </div>
@@ -335,6 +336,7 @@
                 @csrf
                 <div class="modal-body">
                     <p>Are you sure you want to decline this request?</p>
+                    @include('requests.partials.decline-remarks')
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
@@ -432,6 +434,7 @@
                 @csrf
                 <div class="modal-body">
                     <p>Are you sure you want to decline this machine request?</p>
+                    @include('requests.partials.decline-remarks')
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
@@ -488,6 +491,7 @@ document.querySelectorAll('.decline-btn').forEach(btn => {
     btn.addEventListener('click', function() {
         const reqId = this.dataset.reqId;
         document.getElementById('declineForm').action = `/requests/parts/${reqId}/decline`;
+        clearDeclineRemarks('declineForm');
     });
 });
 
@@ -534,6 +538,7 @@ document.querySelectorAll('.machine-decline-btn').forEach(btn => {
     btn.addEventListener('click', function() {
         const reqId = this.dataset.reqId;
         document.getElementById('machineDeclineForm').action = `/requests/machines/${reqId}/decline`;
+        clearDeclineRemarks('machineDeclineForm');
     });
 });
 
@@ -556,7 +561,14 @@ document.querySelectorAll('.mp-approve-btn').forEach(btn => {
 document.querySelectorAll('.mp-decline-btn').forEach(btn => {
     btn.addEventListener('click', function() {
         document.getElementById('machinePartDeclineForm').action = `/requests/machine-parts/${this.dataset.id}/decline`;
+        clearDeclineRemarks('machinePartDeclineForm');
     });
 });
+
+// Each decline modal is reused for every row, so a reason typed for one
+// request (then cancelled) must not carry over to the next.
+function clearDeclineRemarks(formId) {
+    document.querySelector(`#${formId} [name="decline_remarks"]`).value = '';
+}
 </script>
 @endsection

@@ -1,23 +1,9 @@
-@php
-    // A literal pipe or line break in a value would split the markdown cell.
-    $cell = fn ($value) => str_replace(['|', "\r", "\n"], ['\|', ' ', ' '], (string) $value);
-@endphp
 <x-mail::message>
 # Hello,
 
 **{{ $requester->name }}** submitted a {{ $type }} request that needs approval.
 
-@foreach ($details as $label => $value)
-**{{ $label }}:** {{ $value }}<br>
-@endforeach
-
-<x-mail::table>
-| {{ implode(' | ', $headers) }} |
-|{{ str_repeat(' --- |', count($headers)) }}
-@foreach ($rows as $row)
-| {!! implode(' | ', array_map(fn ($v) => $cell(e($v)), $row)) !!} |
-@endforeach
-</x-mail::table>
+@include('emails.partials.request-table')
 
 <x-mail::button :url="$url">
 Review Pending Approvals

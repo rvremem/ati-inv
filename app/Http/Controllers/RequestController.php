@@ -12,6 +12,7 @@ use App\Models\Location;
 use App\Models\Customer;
 use App\Models\Role;
 use App\Models\User;
+use App\Mail\RequestDeclined;
 use App\Mail\RequestSubmitted;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
@@ -433,20 +434,33 @@ class RequestController extends Controller
         return redirect()->route('requests.machine-parts')->with('success', 'Machine part request submitted successfully.');
     }
 
-    public function partRequestDecline(PartRequest $partRequest)
+    public function partRequestDecline(Request $request, PartRequest $partRequest)
     {
+        $reason = $this->declineReason($request);
+
         $partRequest->update(['status' => 'Denied']);
 
         // Same shape as the request and approval entries, so all three stages of
         // one request read alike. No MRIS: nothing was issued.
-        $partRequest->loadMissing('itemPart', 'customer');
+        $partRequest->loadMissing('itemPart', 'customer', 'requestedBy');
 
         ActivityLog::log('Declined Item Request', sprintf(
-            'Item No: %s | %s | Customer: %s',
+            'Item No: %s | %s | Customer: %s | Reason: %s',
             $partRequest->itemPart->part_no ?? '-',
             ActivityLog::unitLabel($partRequest->serial_no, (int) $partRequest->quantity),
-            $partRequest->customer->name ?? '-'
+            $partRequest->customer->name ?? '-',
+            $reason
         ));
+
+        $this->notifyDeclined('Part', $partRequest->requestedBy, $reason, ['Item No', 'Serial', 'Qty', 'Remarks'], [
+            $partRequest->itemPart->part_no ?? '-',
+            $partRequest->serial_no ?: '-',
+            $partRequest->quantity,
+            $partRequest->remarks ?: '-',
+        ], [
+            'Customer' => $partRequest->customer->name ?? '-',
+            'Pick Date' => $partRequest->pick_date ? \Illuminate\Support\Carbon::parse($partRequest->pick_date)->format('Y-m-d') : '-',
+        ]);
 
         return redirect()->route('requests.pending')->with('success', 'Part request declined.');
     }
@@ -478,30 +492,45 @@ class RequestController extends Controller
         return redirect()->route('requests.pending')->with('success', 'Machine part approved and issued.');
     }
 
-    public function machinePartDecline(MachinePart $machinePart)
+    public function machinePartDecline(Request $request, MachinePart $machinePart)
     {
+        $reason = $this->declineReason($request);
+
         // Declining leaves the part on the machine, so nothing is disassembled
         // and the disassembly columns stay as they were.
         $machinePart->update(['status' => MachinePart::STATUS_ASSEMBLED]);
 
         // request_remarks is left in place by the decline, so the entry can
         // still say what was asked for and refused.
-        $machinePart->loadMissing('itemPart', 'machine');
+        $machinePart->loadMissing('itemPart', 'machine.customer', 'requestedBy');
 
         ActivityLog::log('Declined Machine Part Request', sprintf(
-            'Item No: %s | %s | Machine: %s | Remarks: %s',
+            'Item No: %s | %s | Machine: %s | Remarks: %s | Reason: %s',
             $machinePart->itemPart->part_no ?? '-',
             ActivityLog::unitLabel($machinePart->serial_no, (int) $machinePart->quantity),
             $machinePart->machine->serial_no ?? '-',
-            $machinePart->request_remarks ?: '-'
+            $machinePart->request_remarks ?: '-',
+            $reason
         ));
+
+        $this->notifyDeclined('Machine Part', $machinePart->requestedBy, $reason, ['Item No', 'Serial', 'Qty', 'Machine', 'Remarks'], [
+            $machinePart->itemPart->part_no ?? '-',
+            $machinePart->serial_no ?: '-',
+            $machinePart->quantity,
+            $machinePart->machine->serial_no ?? '-',
+            $machinePart->request_remarks ?: '-',
+        ], [
+            'Customer' => $machinePart->machine?->customer?->name ?? '-',
+        ]);
 
         return redirect()->route('requests.pending')->with('success', 'Machine part request declined.');
     }
 
-    public function machineRequestDecline(MachineRequest $machineRequest)
+    public function machineRequestDecline(Request $request, MachineRequest $machineRequest)
     {
-        $machineRequest->load('machine', 'customer');
+        $reason = $this->declineReason($request);
+
+        $machineRequest->load('machine', 'customer', 'requestedBy');
 
         $serial = $machineRequest->machine->serial_no ?? $machineRequest->machine_id;
         $customerName = $machineRequest->customer->name ?? '-';
@@ -518,11 +547,22 @@ class RequestController extends Controller
         $machineRequest->update(['status' => 'Denied']);
 
         ActivityLog::log('Declined Machine Request', sprintf(
-            'Serial: %s | Customer: %s | Purpose: %s',
+            'Serial: %s | Customer: %s | Purpose: %s | Reason: %s',
             $serial,
             $customerName,
-            $purpose
+            $purpose,
+            $reason
         ));
+
+        $this->notifyDeclined('Machine', $machineRequest->requestedBy, $reason, ['Serial', 'Model', 'Purpose', 'Remarks'], [
+            $serial,
+            $machineRequest->machine->model ?? '-',
+            $purpose,
+            $machineRequest->remarks ?: '-',
+        ], [
+            'Customer' => $customerName,
+            'Pick Date' => $machineRequest->pick_date ? \Illuminate\Support\Carbon::parse($machineRequest->pick_date)->format('Y-m-d') : '-',
+        ]);
 
         return redirect()->route('requests.pending')->with('success', 'Machine request declined successfully.');
     }
@@ -531,10 +571,6 @@ class RequestController extends Controller
      * Send one email that a request is waiting: Admins and SAs (the approvers)
      * as To, Developers and the requester as CC. If there is no approver yet,
      * the Developers move up to To so the email still has a main recipient.
-     *
-     * The request is already saved by now, so a mail failure (SMTP down, bad
-     * credentials) is logged rather than thrown — it must not turn a
-     * successful submission into an error page.
      */
     private function notifyApprovers(string $type, array $headers, array $rows, array $details = []): void
     {
@@ -542,37 +578,77 @@ class RequestController extends Controller
             return;
         }
 
-        $emailsFor = fn (array $codes) => User::whereIn('role_id', array_filter(array_map([Role::class, 'idForCode'], $codes)))
-            ->where('is_active', true)
-            ->whereNotNull('email')
-            ->pluck('email')
-            ->unique()
-            ->values();
-
-        $to = $emailsFor(['Admin', 'SA']);
-        $cc = $emailsFor(['Developer']);
+        $to = $this->roleEmails(['Admin', 'SA']);
+        $cc = $this->roleEmails(['Developer']);
 
         if ($to->isEmpty()) {
             [$to, $cc] = [$cc, collect()];
         }
 
+        // The requester gets a copy as their record of what was submitted.
+        $cc->push(auth()->user()->email);
+
+        $this->sendRequestMail($to, $cc, new RequestSubmitted($type, auth()->user(), $headers, $rows, $details));
+    }
+
+    /**
+     * Tell the requester their request was declined: requester as To,
+     * Developers, Admins and SAs as CC. Old rows with no requested_by have no
+     * one to address, so the CC list moves up to To instead.
+     */
+    private function notifyDeclined(string $type, ?User $requester, string $reason, array $headers, array $row, array $details = []): void
+    {
+        $to = collect([$requester?->email]);
+        $cc = $this->roleEmails(['Developer', 'Admin', 'SA']);
+
+        if (! $requester?->email) {
+            [$to, $cc] = [$cc, collect()];
+        }
+
+        $details['Requested By'] = $requester?->name ?? '-';
+
+        $this->sendRequestMail($to, $cc, new RequestDeclined($type, $requester, auth()->user(), $reason, $headers, [$row], $details));
+    }
+
+    /**
+     * The approver's reason for declining, typed in the decline modal on the
+     * Pending Approvals page. Required so the requester is always told why.
+     */
+    private function declineReason(Request $request): string
+    {
+        return trim($request->validate([
+            'decline_remarks' => 'required|string|max:500',
+        ])['decline_remarks']);
+    }
+
+    /** Email addresses of active users holding any of the given role codes. */
+    private function roleEmails(array $codes): \Illuminate\Support\Collection
+    {
+        return User::whereIn('role_id', array_filter(array_map([Role::class, 'idForCode'], $codes)))
+            ->where('is_active', true)
+            ->whereNotNull('email')
+            ->pluck('email');
+    }
+
+    /**
+     * Send one email to everyone at once. No address appears twice — e.g. an
+     * Admin raising their own request is already in To, so not CC'd as well.
+     *
+     * The request is already saved by now, so a mail failure (SMTP down, bad
+     * credentials) is logged rather than thrown — it must not turn a
+     * successful submission or decline into an error page.
+     */
+    private function sendRequestMail(\Illuminate\Support\Collection $to, \Illuminate\Support\Collection $cc, \Illuminate\Mail\Mailable $mail): void
+    {
+        $to = $to->filter()->unique()->values();
+        $cc = $cc->filter()->unique()->diff($to)->values();
+
         if ($to->isEmpty()) {
             return;
         }
 
-        // The requester gets a copy as their record of what was submitted.
-        if ($requesterEmail = auth()->user()->email) {
-            $cc->push($requesterEmail);
-        }
-
-        // No address twice — e.g. an Admin raising their own request is
-        // already in To.
-        $cc = $cc->unique()->diff($to)->values();
-
         try {
-            Mail::to($to->all())
-                ->cc($cc->all())
-                ->send(new RequestSubmitted($type, auth()->user(), $headers, $rows, $details));
+            Mail::to($to->all())->cc($cc->all())->send($mail);
         } catch (\Throwable $e) {
             Log::error("Request notification email failed: {$e->getMessage()}");
         }
