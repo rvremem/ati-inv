@@ -388,6 +388,77 @@ class MaintenanceController extends Controller
         return checkdate($month, $day, $year) ? Carbon::create($year, $month, $day)->startOfDay() : null;
     }
 
+    private const COVERAGE_WORDS = [
+        'one' => 1, 'two' => 2, 'three' => 3, 'four' => 4, 'five' => 5, 'six' => 6,
+        'seven' => 7, 'eight' => 8, 'nine' => 9, 'ten' => 10, 'eleven' => 11, 'twelve' => 12,
+        'eighteen' => 18, 'twenty-four' => 24, 'twenty four' => 24, 'thirty' => 30,
+        'thirty-six' => 36, 'thirty six' => 36, 'forty-eight' => 48, 'forty eight' => 48,
+        'sixty' => 60,
+    ];
+
+    /**
+     * Reads a coverage cell the way people actually type it into the
+     * spreadsheet: "36", "36 months", "36mos", "1 year", "2 yrs", "1.5 years",
+     * "1 year and 6 months", "three years". Bare numbers are months. Returns
+     * null when the cell can't be read as a whole number of months, or is
+     * ambiguous like "12-24 months", so the row is skipped rather than
+     * imported with a guessed coverage.
+     */
+    private function parseCoverage(string $value): ?int
+    {
+        $text = mb_strtolower(trim($value));
+
+        // "a year" / "an year" → "1 year"
+        $text = preg_replace('/\ban?\s+(year|month)/', '1 $1', $text);
+
+        // Longest words first so "twenty four" wins over a stray "four".
+        $words = self::COVERAGE_WORDS;
+        uksort($words, fn ($a, $b) => strlen($b) <=> strlen($a));
+        foreach ($words as $word => $number) {
+            $text = preg_replace('/\b' . preg_quote($word, '/') . '\b/', (string) $number, $text);
+        }
+
+        // Contract-style "One (1) Year" / "Thirty-Six (36) Months" says the
+        // number twice; keep it once.
+        $text = preg_replace('/\b(\d+(?:\.\d+)?)\s*\(\s*\1\s*\)/', '$1', $text);
+
+        preg_match_all(
+            '/(\d+(?:\.\d+)?)\s*-?\s*(years?|yrs?|y|months?|mons?|mths?|mos?|m)?(?![a-z])/',
+            $text,
+            $matches,
+            PREG_SET_ORDER
+        );
+
+        if ($matches === []) {
+            return null;
+        }
+
+        $withUnit = array_filter($matches, fn ($m) => ($m[2] ?? '') !== '');
+
+        if ($withUnit === []) {
+            // No unit anywhere: a single number is months, more than one is a guess.
+            if (count($matches) !== 1) {
+                return null;
+            }
+            $total = (float) $matches[0][1];
+        } else {
+            // A number without a unit next to ones with units ("12-24 months")
+            // can't be placed, so the cell is not read at all.
+            if (count($withUnit) !== count($matches)) {
+                return null;
+            }
+            $total = 0.0;
+            foreach ($withUnit as $m) {
+                $total += str_starts_with($m[2], 'y') ? (float) $m[1] * 12 : (float) $m[1];
+            }
+        }
+
+        $months = (int) round($total);
+
+        // 1.3 years is 15.6 months — not a coverage anyone wrote on purpose.
+        return $months > 0 && abs($total - $months) < 0.01 ? $months : null;
+    }
+
     /**
      * A serial already under contract is a renewal, not a new contract: the
      * file row overwrites what is on file instead of adding a second row.
@@ -447,13 +518,15 @@ class MaintenanceController extends Controller
                 continue;
             }
 
-            if ($data['coverage_months'] !== '' && ! ctype_digit($data['coverage_months'])) {
-                $skipped++;
-                $reasons[] = "{$label}: coverage_months '{$data['coverage_months']}' is not a whole number";
-                continue;
+            $months = null;
+            if ($data['coverage_months'] !== '') {
+                $months = $this->parseCoverage($data['coverage_months']);
+                if ($months === null) {
+                    $skipped++;
+                    $reasons[] = "{$label}: coverage_months '{$data['coverage_months']}' could not be read as months or years";
+                    continue;
+                }
             }
-
-            $months = $data['coverage_months'] !== '' ? (int) $data['coverage_months'] : null;
 
             if ($data['end_date'] !== '') {
                 $end = $this->parseCsvDate($data['end_date']);

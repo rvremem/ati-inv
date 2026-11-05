@@ -67,6 +67,13 @@
                                     worked out from the two dates.
                                 </li>
                                 <li>
+                                    <code>coverage_months</code> can include words: <code>36</code>,
+                                    <code>36 months</code>, <code>36 mos</code>, <code>1 year</code>,
+                                    <code>2 yrs</code>, <code>1.5 years</code>, <code>1 year and 6 months</code>
+                                    and <code>three years</code> are all read as months (36, 36, 36, 12, 24, 18,
+                                    18, 36). A plain number is taken as months.
+                                </li>
+                                <li>
                                     <strong>A <code>serial_no</code> already on file is treated as a renewal</strong>
                                     &mdash; the existing contract (every row for that serial) is updated with this
                                     row's dates, PO and details instead of a new contract being added. A blank
@@ -80,8 +87,8 @@
                                 </li>
                                 <li>
                                     Rows with a missing required field, an invalid date (e.g. Feb 30), an
-                                    <code>end_date</code> on or before <code>start_date</code>, a non-numeric
-                                    <code>coverage_months</code>, or the wrong number of columns are skipped and
+                                    <code>end_date</code> on or before <code>start_date</code>, a
+                                    <code>coverage_months</code> that can't be read (e.g. <code>12-24 months</code>), or the wrong number of columns are skipped and
                                     reported back with the reason. The rest still import.
                                 </li>
                             </ul>
