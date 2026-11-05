@@ -57,8 +57,9 @@ trait ImportsCsv
      * reasons in the toast itself ran off the screen on a large file.
      *
      * $skippedRows is as App\Support\BatchResult::store() describes. $counts
-     * is label => number, shown as the page's summary; 'Imported' and
-     * 'Skipped' are expected among them.
+     * is label => number of rows that went in ('Imported' expected among
+     * them); the skipped rows are counted here, split into those that need
+     * fixing and those already on file.
      */
     protected function batchResultRedirect(
         \Illuminate\Http\RedirectResponse $redirect,
@@ -69,24 +70,32 @@ trait ImportsCsv
         array $counts,
         string $extra = ''
     ): \Illuminate\Http\RedirectResponse {
-        $skipped = count($skippedRows);
+        $toFix = count(array_filter($skippedRows, fn ($s) => $s['fixable'] ?? true));
+        $onFile = count($skippedRows) - $toFix;
+        $landed = array_sum($counts);
+
         $message = $this->batchSummary($noun, $counts['Imported'] ?? 0, 0, [], $extra);
 
-        if ($skipped > 0) {
-            $message .= " {$skipped} row(s) skipped.";
+        if ($toFix > 0) {
+            $message .= " {$toFix} row(s) skipped and need fixing.";
+        }
+        if ($onFile > 0) {
+            $message .= " {$onFile} row(s) already on file.";
+        }
 
+        if ($skippedRows !== []) {
             $redirect->with('batch_result', \App\Support\BatchResult::store(
                 $title,
                 $redirect->getTargetUrl(),
                 $header,
                 $skippedRows,
-                $counts
+                $counts + ['Need fixing' => $toFix, 'Already on file' => $onFile]
             ));
         }
 
-        // Nothing went in at all: that is not a success, so it shows red.
-        $landed = array_sum($counts) - $skipped;
-        $type = $landed === 0 && $skipped > 0 ? 'warning' : 'success';
+        // Nothing went in and something needs fixing: not a success, so red.
+        // A re-upload where every row is already on file is not an error.
+        $type = $landed === 0 && $toFix > 0 ? 'warning' : 'success';
 
         return $redirect->with($type, $message);
     }

@@ -16,23 +16,33 @@ class BatchResultController extends Controller
 
         // Most skipped files have one or two causes repeated thousands of
         // times; the counts per cause are what tell you what to fix.
-        $groups = collect($result['skipped'])
-            ->countBy('group')
-            ->sortDesc();
+        $skipped = collect($result['skipped']);
 
-        return view('batch-results.show', compact('result', 'groups'));
+        $groups = $skipped->countBy('group')->sortDesc();
+
+        $onFileGroups = $skipped
+            ->reject(fn ($s) => $s['fixable'] ?? true)
+            ->pluck('group')
+            ->flip();
+
+        $toFix = $skipped->filter(fn ($s) => $s['fixable'] ?? true)->count();
+
+        return view('batch-results.show', compact('result', 'groups', 'onFileGroups', 'toFix'));
     }
 
     /**
-     * The skipped rows exactly as they were uploaded, with an upload_error
-     * column in front saying why. Every upload reads columns by header name
-     * and ignores any it does not know, so the fixed file can be uploaded
-     * again as it is, upload_error column and all.
+     * The rows that need fixing, exactly as they were uploaded, with an
+     * upload_error column in front saying why. Rows skipped because their
+     * contract is already on file are left out — there is nothing to fix.
+     * Every upload reads columns by header name and ignores any it does not
+     * know, so the fixed file can be uploaded again as it is, upload_error
+     * column and all.
      */
     public function skippedCsv(string $id)
     {
         $result = BatchResult::find($id) ?? abort(404);
         $header = $result['header'];
+        $result['skipped'] = array_filter($result['skipped'], fn ($s) => $s['fixable'] ?? true);
 
         return response()->streamDownload(function () use ($result, $header) {
             $out = fopen('php://output', 'w');

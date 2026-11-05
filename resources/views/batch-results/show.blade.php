@@ -13,9 +13,11 @@
             <a href="{{ $result['back_url'] }}" class="btn btn-outline-secondary">
                 <i class="fas fa-arrow-left"></i> Back
             </a>
-            <a href="{{ route('batch-results.skipped-csv', $result['id']) }}" class="btn btn-primary">
-                <i class="fas fa-file-download"></i> Download skipped rows (CSV)
-            </a>
+            @if ($toFix > 0)
+                <a href="{{ route('batch-results.skipped-csv', $result['id']) }}" class="btn btn-primary">
+                    <i class="fas fa-file-download"></i> Download rows to fix (CSV)
+                </a>
+            @endif
         </div>
     </div>
 
@@ -25,7 +27,7 @@
                 <div class="card h-100">
                     <div class="card-body">
                         <div class="text-muted small">{{ $label }}</div>
-                        <div class="fs-3 fw-bold {{ $label === 'Skipped' && $count > 0 ? 'text-danger' : '' }}">
+                        <div class="fs-3 fw-bold {{ $label === 'Need fixing' && $count > 0 ? 'text-danger' : '' }}">
                             {{ number_format($count) }}
                         </div>
                     </div>
@@ -34,11 +36,14 @@
         @endforeach
     </div>
 
-    <div class="alert alert-info small">
-        <strong>To fix the skipped rows:</strong> download them, correct them in Excel and upload the
-        file again. Each row's <code>upload_error</code> column says what was wrong; it is ignored on upload,
-        so there is no need to delete it. Rows that already went in are not touched.
-    </div>
+    @if ($toFix > 0)
+        <div class="alert alert-info small">
+            <strong>To fix the skipped rows:</strong> download them, correct them in Excel and upload the
+            file again. Each row's <code>upload_error</code> column says what was wrong; it is ignored on upload,
+            so there is no need to delete it. Rows already on file are not in the download, and rows that
+            already went in are not touched.
+        </div>
+    @endif
 
     <div class="row g-4">
         <div class="col-lg-4">
@@ -53,7 +58,8 @@
                     @foreach ($groups as $group => $count)
                         <button type="button" class="list-group-item list-group-item-action d-flex justify-content-between gap-2 text-start" data-group="{{ $group }}">
                             <span>{{ $group }}</span>
-                            <span class="badge bg-danger rounded-pill align-self-start">{{ number_format($count) }}</span>
+                            {{-- Grey: already on file, nothing to fix. --}}
+                            <span class="badge {{ isset($onFileGroups[$group]) ? 'bg-secondary' : 'bg-danger' }} rounded-pill align-self-start">{{ number_format($count) }}</span>
                         </button>
                     @endforeach
                 </div>

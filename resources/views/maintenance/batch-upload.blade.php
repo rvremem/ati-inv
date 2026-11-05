@@ -80,6 +80,12 @@
                                     <code>remarks</code> keeps the existing note.
                                 </li>
                                 <li>
+                                    A <code>serial_no</code> of <strong>N/A</strong> (or NA, none, -) is never a
+                                    renewal and is never skipped: every such row is added as its own contract,
+                                    even when several share a PO. <strong>Uploading the same file twice adds its
+                                    N/A rows twice</strong>, so remove rows that already went in before re-uploading.
+                                </li>
+                                <li>
                                     A row with the <strong>same dates</strong> as the contract on file changes
                                     nothing and is skipped, so uploading the same file twice is harmless. A row that
                                     <strong>starts earlier</strong> than the contract on file is skipped too, so an

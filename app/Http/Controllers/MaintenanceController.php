@@ -459,6 +459,14 @@ class MaintenanceController extends Controller
         return $months > 0 && abs($total - $months) < 0.01 ? $months : null;
     }
 
+    /** "N/A", "NA", "n.a.", "none", "-": a serial cell that says there is none. */
+    private function isNoSerial(?string $serial): bool
+    {
+        $value = str_replace(['.', ' '], '', mb_strtolower(trim((string) $serial)));
+
+        return in_array($value, ['n/a', 'na', 'none', '-', '--'], true);
+    }
+
     /**
      * A serial already under contract is a renewal, not a new contract: the
      * file row overwrites what is on file instead of adding a second row.
@@ -467,6 +475,11 @@ class MaintenanceController extends Controller
      * earlier uploads come out agreeing with each other. A row with the same
      * dates as the one on file is a re-upload and changes nothing; a row that
      * starts before it is an older spreadsheet and would roll the renewal back.
+     *
+     * A serial of N/A identifies nothing, so those rows are never renewals
+     * and never skipped as already on file: one PO often covers several
+     * unserialised items, and each is its own contract. The catch is that
+     * uploading the same file twice adds its N/A rows twice.
      */
     public function batchStore(Request $request)
     {
@@ -475,7 +488,10 @@ class MaintenanceController extends Controller
 
         [$header, $records] = $this->readCsv($request->file('csv_file'));
 
-        $bySerial = MaintenanceContract::orderBy('id')->get()
+        $onFile = MaintenanceContract::orderBy('id')->get();
+
+        $bySerial = $onFile
+            ->reject(fn ($c) => $this->isNoSerial($c->serial_no))
             ->groupBy(fn ($c) => mb_strtolower(trim($c->serial_no)));
 
         $imported = 0;
@@ -487,13 +503,16 @@ class MaintenanceController extends Controller
 
         // Records why the current row was not imported. $group is the reason
         // without its row-specific values, for the per-reason counts on the
-        // results page; it defaults to the reason itself.
-        $skip = function (string $reason, ?string $group = null) use (&$skippedRows, &$line, &$label, &$row) {
+        // results page; it defaults to the reason itself. $fixable is false
+        // for a row whose contract is already on file: nothing is wrong with
+        // it, so it stays out of the rows-to-fix download.
+        $skip = function (string $reason, ?string $group = null, bool $fixable = true) use (&$skippedRows, &$line, &$label, &$row) {
             $skippedRows[] = [
                 'line' => $line,
                 'label' => $label,
                 'reason' => $reason,
                 'group' => $group ?? $reason,
+                'fixable' => $fixable,
                 'row' => $row,
             ];
         };
@@ -588,6 +607,17 @@ class MaintenanceController extends Controller
                 'remarks' => $data['remarks'] ?: null,
             ];
 
+            if ($this->isNoSerial($data['serial_no'])) {
+                try {
+                    MaintenanceContract::create($payload);
+                    $importedLabels[] = "{$data['po_no']}/{$data['serial_no']}";
+                    $imported++;
+                } catch (\Throwable $e) {
+                    $skip($this->rowError($e));
+                }
+                continue;
+            }
+
             $serialKey = mb_strtolower($data['serial_no']);
             $existing = $bySerial->get($serialKey);
 
@@ -597,7 +627,8 @@ class MaintenanceController extends Controller
                     if ($sameDates) {
                         $skip(
                             "serial {$data['serial_no']} is already on file with these dates",
-                            'serial is already on file with these dates'
+                            'serial is already on file with these dates',
+                            false
                         );
                         continue;
                     }
@@ -606,7 +637,8 @@ class MaintenanceController extends Controller
                     if ($start->lt($latestStart)) {
                         $skip(
                             "serial {$data['serial_no']} already has a newer contract starting {$latestStart->format('Y-m-d')}",
-                            'serial already has a newer contract'
+                            'serial already has a newer contract',
+                            false
                         );
                         continue;
                     }
@@ -668,7 +700,7 @@ class MaintenanceController extends Controller
             'maintenance contract',
             $header,
             $skippedRows,
-            ['Imported' => $imported, 'Renewed' => $renewed, 'Skipped' => $skipped],
+            ['Imported' => $imported, 'Renewed' => $renewed],
             $extra
         );
     }
