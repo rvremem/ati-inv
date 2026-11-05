@@ -34,7 +34,7 @@
                         </div>
                     </div>
 
-                    <form method="POST" action="{{ route('maintenance.batch-store') }}" enctype="multipart/form-data">
+                    <form id="batchUploadForm" method="POST" action="{{ route('maintenance.batch-store') }}" enctype="multipart/form-data">
                         @csrf
 
                         <div class="mb-3">
@@ -95,10 +95,10 @@
                         </div>
 
                         <div class="d-flex gap-2">
-                            <button type="submit" class="btn btn-primary">
+                            <button type="submit" id="batchUploadBtn" class="btn btn-primary">
                                 <i class="fas fa-upload"></i> Upload
                             </button>
-                            <a href="{{ route('maintenance.index') }}" class="btn btn-secondary">
+                            <a id="batchUploadCancel" href="{{ route('maintenance.index') }}" class="btn btn-secondary">
                                 <i class="fas fa-times"></i> Cancel
                             </a>
                         </div>
@@ -127,4 +127,28 @@
         </div>
     </div>
 </div>
+@endsection
+
+@section('scripts')
+<script>
+// A large file takes several seconds to import. Leaving the page meanwhile
+// throws away the redirect that carries the result, so the upload looks like
+// it did nothing. Show that it is working until the result page arrives.
+(function () {
+    const form = document.getElementById('batchUploadForm');
+
+    form.addEventListener('submit', () => {
+        const btn = document.getElementById('batchUploadBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Uploading… please stay on this page';
+        document.getElementById('batchUploadCancel').classList.add('disabled');
+    });
+
+    // Coming back with the browser's Back button can restore the page from
+    // cache with the button still disabled.
+    window.addEventListener('pageshow', e => {
+        if (e.persisted) location.reload();
+    });
+})();
+</script>
 @endsection
