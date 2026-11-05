@@ -127,7 +127,15 @@ window.notify = (function () {
         box.appendChild(close);
 
         stack().appendChild(box);
-        setTimeout(() => dismiss(box), t.ms);
+
+        // A long message (a batch upload summary listing skipped rows, say)
+        // gets time to be read: about 60ms a character, up to 20 seconds.
+        // Hovering holds it open; it can always be closed with the ×.
+        const length = Array.isArray(message) ? message.join(' ').length : String(message).length;
+        const ms = Math.min(Math.max(t.ms, length * 60), 20000);
+        let timer = setTimeout(() => dismiss(box), ms);
+        box.addEventListener('mouseenter', () => clearTimeout(timer));
+        box.addEventListener('mouseleave', () => { timer = setTimeout(() => dismiss(box), 2000); });
 
         return box;
     };

@@ -641,7 +641,10 @@ class MaintenanceController extends Controller
             ? "{$renewed} renewed (" . $rowsUpdated . ' existing contract row(s) updated).'
             : '';
 
+        // Nothing went in at all: that is not a success, so it shows red.
+        $flash = $imported + $renewed === 0 && $skipped > 0 ? 'warning' : 'success';
+
         return redirect()->route('maintenance.index')
-            ->with('success', $this->batchSummary('maintenance contract', $imported, $skipped, $reasons, $extra));
+            ->with($flash, $this->batchSummary('maintenance contract', $imported, $skipped, $reasons, $extra));
     }
 }
