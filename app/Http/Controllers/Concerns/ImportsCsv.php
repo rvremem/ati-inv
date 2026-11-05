@@ -51,6 +51,47 @@ trait ImportsCsv
     }
 
     /**
+     * Ends a batch upload with a short toast — the counts only — and, when
+     * rows were skipped, a "View details" link to a page listing every one of
+     * them with a download of those rows to fix and upload again. Listing the
+     * reasons in the toast itself ran off the screen on a large file.
+     *
+     * $skippedRows is as App\Support\BatchResult::store() describes. $counts
+     * is label => number, shown as the page's summary; 'Imported' and
+     * 'Skipped' are expected among them.
+     */
+    protected function batchResultRedirect(
+        \Illuminate\Http\RedirectResponse $redirect,
+        string $title,
+        string $noun,
+        array $header,
+        array $skippedRows,
+        array $counts,
+        string $extra = ''
+    ): \Illuminate\Http\RedirectResponse {
+        $skipped = count($skippedRows);
+        $message = $this->batchSummary($noun, $counts['Imported'] ?? 0, 0, [], $extra);
+
+        if ($skipped > 0) {
+            $message .= " {$skipped} row(s) skipped.";
+
+            $redirect->with('batch_result', \App\Support\BatchResult::store(
+                $title,
+                $redirect->getTargetUrl(),
+                $header,
+                $skippedRows,
+                $counts
+            ));
+        }
+
+        // Nothing went in at all: that is not a success, so it shows red.
+        $landed = array_sum($counts) - $skipped;
+        $type = $landed === 0 && $skipped > 0 ? 'warning' : 'success';
+
+        return $redirect->with($type, $message);
+    }
+
+    /**
      * A failed insert as one short line for the upload summary. The raw
      * QueryException carries the driver prefix, the full SQL and every bound
      * value, so a single long row filled the whole notification.

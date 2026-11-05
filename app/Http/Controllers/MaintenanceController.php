@@ -481,18 +481,30 @@ class MaintenanceController extends Controller
         $imported = 0;
         $renewed = 0;
         $rowsUpdated = 0;
-        $skipped = 0;
-        $reasons = [];
+        $skippedRows = [];
         $importedLabels = [];
         $renewedLabels = [];
 
+        // Records why the current row was not imported. $group is the reason
+        // without its row-specific values, for the per-reason counts on the
+        // results page; it defaults to the reason itself.
+        $skip = function (string $reason, ?string $group = null) use (&$skippedRows, &$line, &$label, &$row) {
+            $skippedRows[] = [
+                'line' => $line,
+                'label' => $label,
+                'reason' => $reason,
+                'group' => $group ?? $reason,
+                'row' => $row,
+            ];
+        };
+
         foreach ($records as $i => $row) {
             $line = $i + 2; // +1 for the header, +1 because humans count from 1
+            $label = '';
             $data = $this->rowToPayload($header, $row, self::BATCH_COLUMNS);
 
             if ($data === null) {
-                $skipped++;
-                $reasons[] = "line {$line}: column count does not match the header";
+                $skip('column count does not match the header');
                 continue;
             }
 
@@ -502,8 +514,7 @@ class MaintenanceController extends Controller
             ));
 
             if ($missing !== []) {
-                $skipped++;
-                $reasons[] = "line {$line}: missing " . implode(', ', $missing);
+                $skip('missing ' . implode(', ', $missing));
                 continue;
             }
 
@@ -513,8 +524,10 @@ class MaintenanceController extends Controller
 
             $start = $this->parseCsvDate($data['start_date']);
             if (! $start) {
-                $skipped++;
-                $reasons[] = "{$label}: start_date '{$data['start_date']}' is not a valid YYYY-MM-DD or MM/DD/YYYY date";
+                $skip(
+                    "start_date '{$data['start_date']}' is not a valid YYYY-MM-DD or MM/DD/YYYY date",
+                    'start_date is not a valid date'
+                );
                 continue;
             }
 
@@ -522,8 +535,10 @@ class MaintenanceController extends Controller
             if ($data['coverage_months'] !== '') {
                 $months = $this->parseCoverage($data['coverage_months']);
                 if ($months === null) {
-                    $skipped++;
-                    $reasons[] = "{$label}: coverage_months '{$data['coverage_months']}' could not be read as months or years";
+                    $skip(
+                        "coverage_months '{$data['coverage_months']}' could not be read as months or years",
+                        'coverage_months could not be read'
+                    );
                     continue;
                 }
             }
@@ -531,8 +546,10 @@ class MaintenanceController extends Controller
             if ($data['end_date'] !== '') {
                 $end = $this->parseCsvDate($data['end_date']);
                 if (! $end) {
-                    $skipped++;
-                    $reasons[] = "{$label}: end_date '{$data['end_date']}' is not a valid YYYY-MM-DD or MM/DD/YYYY date";
+                    $skip(
+                        "end_date '{$data['end_date']}' is not a valid YYYY-MM-DD or MM/DD/YYYY date",
+                        'end_date is not a valid date'
+                    );
                     continue;
                 }
             } else {
@@ -545,8 +562,7 @@ class MaintenanceController extends Controller
             // a swapped pair of dates imports as a contract that is already
             // expired on the day it is loaded.
             if ($end->lte($start)) {
-                $skipped++;
-                $reasons[] = "{$label}: end_date must be after start_date";
+                $skip('end_date must be after start_date');
                 continue;
             }
 
@@ -579,15 +595,19 @@ class MaintenanceController extends Controller
                 if ($existing) {
                     $sameDates = $existing->first(fn ($c) => $c->start_date->eq($start) && $c->end_date?->eq($end));
                     if ($sameDates) {
-                        $skipped++;
-                        $reasons[] = "{$label}: serial {$data['serial_no']} is already on file with these dates";
+                        $skip(
+                            "serial {$data['serial_no']} is already on file with these dates",
+                            'serial is already on file with these dates'
+                        );
                         continue;
                     }
 
                     $latestStart = $existing->max('start_date');
                     if ($start->lt($latestStart)) {
-                        $skipped++;
-                        $reasons[] = "{$label}: serial {$data['serial_no']} already has a newer contract starting {$latestStart->format('Y-m-d')}";
+                        $skip(
+                            "serial {$data['serial_no']} already has a newer contract starting {$latestStart->format('Y-m-d')}",
+                            'serial already has a newer contract'
+                        );
                         continue;
                     }
 
@@ -616,10 +636,11 @@ class MaintenanceController extends Controller
                 $importedLabels[] = "{$data['po_no']}/{$data['serial_no']}";
                 $imported++;
             } catch (\Throwable $e) {
-                $skipped++;
-                $reasons[] = "{$label}: {$this->rowError($e)}";
+                $skip($this->rowError($e));
             }
         }
+
+        $skipped = count($skippedRows);
 
         $labels = array_merge(
             $importedLabels !== [] ? ['new: ' . implode(', ', $importedLabels)] : [],
@@ -641,10 +662,14 @@ class MaintenanceController extends Controller
             ? "{$renewed} renewed (" . $rowsUpdated . ' existing contract row(s) updated).'
             : '';
 
-        // Nothing went in at all: that is not a success, so it shows red.
-        $flash = $imported + $renewed === 0 && $skipped > 0 ? 'warning' : 'success';
-
-        return redirect()->route('maintenance.index')
-            ->with($flash, $this->batchSummary('maintenance contract', $imported, $skipped, $reasons, $extra));
+        return $this->batchResultRedirect(
+            redirect()->route('maintenance.index'),
+            'Maintenance Contracts',
+            'maintenance contract',
+            $header,
+            $skippedRows,
+            ['Imported' => $imported, 'Renewed' => $renewed, 'Skipped' => $skipped],
+            $extra
+        );
     }
 }

@@ -6,6 +6,7 @@ use App\Http\Controllers\Auth\LoginController;
 use App\Http\Controllers\Auth\RegisterController;
 use App\Http\Controllers\Auth\EmailVerificationController;
 use App\Http\Controllers\Auth\PasswordResetController;
+use App\Http\Controllers\BatchResultController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\ReceivingController;
@@ -199,6 +200,10 @@ Route::middleware('auth')->group(function () {
         Route::get('batch-upload', [MaintenanceController::class, 'batchUpload'])->name('batch-upload');
         Route::post('batch-upload', [MaintenanceController::class, 'batchStore'])->name('batch-store');
     });
+
+    // Batch upload results — every skipped row, linked from the upload toast
+    Route::get('batch-results/{id}', [BatchResultController::class, 'show'])->name('batch-results.show');
+    Route::get('batch-results/{id}/skipped-csv', [BatchResultController::class, 'skippedCsv'])->name('batch-results.skipped-csv');
 
     // Machines
     Route::prefix('machines')->name('machines.')->group(function () {

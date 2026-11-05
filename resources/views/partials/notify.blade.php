@@ -1,11 +1,13 @@
 {{--
     Top-right notifications, the one way the app tells anyone anything.
 
-    notify(message, type, title)
+    notify(message, type, title, link)
       type    success (green), warning or error (both red: either way it did
               not go through), info (blue)
       message a string, or an array of strings shown as a list — validation
               errors, say — under the optional title
+      link    optional {url, text}, a link under the message ("View details"
+              after a batch upload); the message then stays until closed
 
     Replaces the browser's alert() box, which blocks the page and reads as
     "localhost:8000 says". Plain DOM with no jQuery or Bootstrap JS, so it can
@@ -87,7 +89,7 @@ window.notify = (function () {
         setTimeout(() => box.remove(), 300);
     }
 
-    return function notify(message, type = 'info', title = '') {
+    return function notify(message, type = 'info', title = '', link = null) {
         const t = TYPES[type] || TYPES.info;
 
         const box = document.createElement('div');
@@ -126,7 +128,20 @@ window.notify = (function () {
         close.addEventListener('click', () => dismiss(box));
         box.appendChild(close);
 
+        if (link && link.url) {
+            const a = document.createElement('a');
+            a.href = link.url;
+            a.className = 'alert-link d-block mt-2';
+            a.textContent = (link.text || 'View details') + ' →';
+            box.appendChild(a);
+        }
+
         stack().appendChild(box);
+
+        // Something to click: leave it up until it is closed.
+        if (link && link.url) {
+            return box;
+        }
 
         // A long message (a batch upload summary listing skipped rows, say)
         // gets time to be read: about 60ms a character, up to 20 seconds.
