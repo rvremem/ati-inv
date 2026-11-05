@@ -617,7 +617,7 @@ class MaintenanceController extends Controller
                 $imported++;
             } catch (\Throwable $e) {
                 $skipped++;
-                $reasons[] = "{$label}: {$e->getMessage()}";
+                $reasons[] = "{$label}: {$this->rowError($e)}";
             }
         }
 

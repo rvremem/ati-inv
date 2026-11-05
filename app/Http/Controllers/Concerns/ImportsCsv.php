@@ -51,6 +51,29 @@ trait ImportsCsv
     }
 
     /**
+     * A failed insert as one short line for the upload summary. The raw
+     * QueryException carries the driver prefix, the full SQL and every bound
+     * value, so a single long row filled the whole notification.
+     */
+    protected function rowError(\Throwable $e): string
+    {
+        $message = $e->getMessage();
+
+        if (preg_match("/would be truncated in table '[^']*', column '([^']+)'/", $message, $m)) {
+            return "{$m[1]} is too long for the database column";
+        }
+
+        if ($e instanceof \Illuminate\Database\QueryException) {
+            // Drop "SQLSTATE[..]: [Microsoft][ODBC ..][SQL Server]" and the
+            // "(Connection: .., SQL: ..)" tail, keeping SQL Server's own words.
+            $message = preg_replace('/\s*\(Connection:.*$/s', '', $message);
+            $message = preg_replace('/^SQLSTATE\[\w+\]:\s*(\[[^\]]*\])*\s*/', '', $message);
+        }
+
+        return \Illuminate\Support\Str::limit($message, 150);
+    }
+
+    /**
      * Excel's plain "CSV (Comma delimited)" saves in Windows-1252, not UTF-8,
      * so an ñ or an en dash arrives as a byte that is not valid UTF-8. Left
      * as is, it broke the upload summary: json_encode() gives up on it, the
