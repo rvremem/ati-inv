@@ -34,7 +34,7 @@ trait ImportsCsv
             while (($row = fgetcsv($handle, 0, ',', '"', '\\')) !== false) {
                 // A blank line comes back as [null]; skipped, as before.
                 if ($row !== [null]) {
-                    $records[] = $row;
+                    $records[] = array_map(fn ($cell) => $this->toUtf8($cell), $row);
                 }
             }
 
@@ -48,6 +48,21 @@ trait ImportsCsv
         }
 
         return [$header, $records];
+    }
+
+    /**
+     * Excel's plain "CSV (Comma delimited)" saves in Windows-1252, not UTF-8,
+     * so an ñ or an en dash arrives as a byte that is not valid UTF-8. Left
+     * as is, it broke the upload summary: json_encode() gives up on it, the
+     * page rendered notify(, 'success') and no message appeared at all.
+     */
+    private function toUtf8(?string $cell): ?string
+    {
+        if ($cell === null || mb_check_encoding($cell, 'UTF-8')) {
+            return $cell;
+        }
+
+        return mb_convert_encoding($cell, 'UTF-8', 'Windows-1252');
     }
 
     /**
