@@ -246,10 +246,65 @@
         .btn-primary { background-color: var(--primary-color); border-color: var(--primary-color); }
         .btn-primary:hover { background-color: var(--primary-hover); border-color: var(--primary-hover); }
 
-        @media (max-width: 768px) {
-            .sidebar { width: 100%; position: relative; top: 0; min-height: auto; }
-            .main-content { margin-left: 0; margin-top: 0; }
+        /* Burger + off-canvas sidebar (below 992px) */
+        .sidebar-toggle {
+            display: none;
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.12);
+            color: #e2e8f0;
+            width: 38px;
+            height: 38px;
+            border-radius: 8px;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            margin-right: 10px;
+            flex-shrink: 0;
+        }
+        .sidebar-toggle:hover { background: rgba(255,255,255,0.06); color: #fff; }
+        .sidebar-toggle:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; }
+
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            inset: 56px 0 0 0;
+            background: rgba(15, 23, 42, 0.5);
+            z-index: 1035;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        @media (max-width: 991.98px) {
+            .sidebar-toggle { display: inline-flex; }
+
+            .sidebar {
+                width: 270px;
+                max-width: 85vw;
+                z-index: 1040;
+                transform: translateX(-100%);
+                transition: transform 0.25s ease;
+                box-shadow: none;
+            }
+            body.sidebar-open .sidebar {
+                transform: translateX(0);
+                box-shadow: 4px 0 24px rgba(0,0,0,0.35);
+            }
+            body.sidebar-open .sidebar-backdrop { display: block; opacity: 1; }
+            body.sidebar-open { overflow: hidden; }
+
+            .main-content { margin-left: 0; padding: 14px 12px 20px; }
+
+            /* Let wide tables scroll inside their card instead of widening the page */
+            .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            .card-body { padding: 14px; }
+        }
+
+        @media (max-width: 575.98px) {
             .navbar-brand { font-size: 1rem; }
+            .navbar-user-name { display: none; }
+            .page-header-bar { flex-wrap: wrap; gap: 10px; }
+            div.dataTables_wrapper div.dataTables_filter input { width: 100%; }
+            .dataTables_wrapper > .d-flex { flex-wrap: wrap; gap: 8px; }
         }
 
         /* === Global Page Styles === */
@@ -539,21 +594,23 @@
 </head>
 <body>
     <!-- Navigation -->
-    <nav class="navbar navbar-expand-lg navbar-dark sticky-top">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="{{ route('dashboard') }}">
+    <nav class="navbar navbar-expand navbar-dark sticky-top">
+        <div class="container-fluid flex-nowrap">
+            @auth
+                <button class="sidebar-toggle" type="button" id="sidebarToggle" aria-label="Open menu" aria-controls="appSidebar" aria-expanded="false">
+                    <i class="fas fa-bars"></i>
+                </button>
+            @endauth
+            <a class="navbar-brand me-auto" href="{{ route('dashboard') }}">
                 <span class="brand-icon"><i class="fas fa-boxes"></i></span>
                 ATI Inventory
             </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
+            <div class="navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto">
                     @auth
                         <li class="nav-item dropdown">
                             <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown">
-                                <i class="fas fa-user"></i> {{ Auth::user()->name }}
+                                <i class="fas fa-user"></i> <span class="navbar-user-name">{{ Auth::user()->name }}</span>
                             </a>
                             <ul class="dropdown-menu dropdown-menu-end">
                                 <li><a class="dropdown-item" href="{{ route('users.profile') }}"><i class="fas fa-user-circle"></i> Profile</a></li>
@@ -576,7 +633,8 @@
 
     <!-- Sidebar -->
     @auth
-        <aside class="sidebar">
+        <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+        <aside class="sidebar" id="appSidebar">
             <div class="sidebar-user">
                 <div class="sidebar-user-avatar">{{ strtoupper(substr(Auth::user()->name, 0, 1)) }}</div>
                 <div class="sidebar-user-info">
@@ -798,6 +856,34 @@
     </style>
 
     <script>
+        // Mobile sidebar (burger) toggle
+        (function () {
+            var toggle = document.getElementById('sidebarToggle');
+            var backdrop = document.getElementById('sidebarBackdrop');
+            var sidebar = document.getElementById('appSidebar');
+            if (!toggle || !sidebar) return;
+
+            function setOpen(open) {
+                document.body.classList.toggle('sidebar-open', open);
+                toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+                toggle.querySelector('i').className = open ? 'fas fa-times' : 'fas fa-bars';
+            }
+
+            toggle.addEventListener('click', function () {
+                setOpen(!document.body.classList.contains('sidebar-open'));
+            });
+            backdrop.addEventListener('click', function () { setOpen(false); });
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape') setOpen(false);
+            });
+            sidebar.querySelectorAll('a').forEach(function (a) {
+                a.addEventListener('click', function () { setOpen(false); });
+            });
+            window.addEventListener('resize', function () {
+                if (window.innerWidth >= 992) setOpen(false);
+            });
+        })();
+
         // Global Select2 helper for dynamic row selects
         window.initRowSelect2 = function(container, modalEl) {
             $(container).find('select.form-select').not('.no-select2').each(function() {
