@@ -231,6 +231,24 @@ class MaintenanceController extends Controller
         ];
     }
 
+    /**
+     * Narrows a contract query to one summary card's bucket. Uses the same
+     * boundaries as reportSummary() so a card's count and its filtered table
+     * always agree. Unknown states are ignored (no filter).
+     */
+    private function applyExpiryState($query, ?string $state)
+    {
+        $today = now()->startOfDay();
+        $soon = now()->addDays(30)->endOfDay();
+
+        return match ($state) {
+            'expired' => $query->whereNotNull('end_date')->where('end_date', '<', $today),
+            'soon'    => $query->whereNotNull('end_date')->whereBetween('end_date', [$today, $soon]),
+            'ok'      => $query->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>', $soon)),
+            default   => $query,
+        };
+    }
+
     public function reportData(Request $request)
     {
         $this->authorizeManage();
@@ -239,6 +257,7 @@ class MaintenanceController extends Controller
         $orderColumns = ['customer', 'equipment_type', 'serial_no', 'po_no', 'start_date', 'end_date', 'end_date', 'end_date'];
 
         $base = MaintenanceContract::query()->where('is_active', true);
+        $this->applyExpiryState($base, $request->input('state'));
         $recordsTotal = (clone $base)->count();
 
         $search = trim((string) $request->input('search.value'));
@@ -297,20 +316,21 @@ class MaintenanceController extends Controller
      * to keep it fast, so an export limited to the visible page would be the
      * same defect the old Print button had.
      */
-    public function reportCsv()
+    public function reportCsv(Request $request)
     {
         $this->authorizeManage();
 
+        $state = in_array($request->input('state'), ['expired', 'soon', 'ok'], true) ? $request->input('state') : null;
         $today = now()->startOfDay();
-        $filename = 'maintenance_expiry_report_' . now()->format('Ymd') . '.csv';
+        $filename = 'maintenance_expiry_report_' . ($state ? $state . '_' : '') . now()->format('Ymd') . '.csv';
 
-        return response()->streamDownload(function () use ($today) {
+        return response()->streamDownload(function () use ($today, $state) {
             $out = fopen('php://output', 'w');
             fputcsv($out, ['Customer', 'Equipment', 'Serial No', 'PO No', 'Start Date', 'End Date', 'Days Left', 'Status']);
 
-            $rows = MaintenanceContract::where('is_active', true)
-                ->orderBy('end_date', 'asc')
-                ->cursor();
+            $query = MaintenanceContract::where('is_active', true);
+            $this->applyExpiryState($query, $state);
+            $rows = $query->orderBy('end_date', 'asc')->cursor();
 
             foreach ($rows as $c) {
                 $daysLeft = $c->end_date ? (int) $today->diffInDays($c->end_date, false) : null;
