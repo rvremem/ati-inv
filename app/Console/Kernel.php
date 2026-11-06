@@ -9,7 +9,9 @@ class Kernel extends ConsoleKernel
 {
     protected function schedule(Schedule $schedule): void
     {
-        // $schedule->command('inspire')->hourly();
+        // Also run by the RenewMaintenanceContracts middleware on the first
+        // request of the day, in case no scheduler is set up on the server.
+        $schedule->command('contracts:auto-renew')->dailyAt('00:05');
     }
 
     protected function commands(): void

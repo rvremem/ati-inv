@@ -85,7 +85,9 @@ $(function () {
             { data: 'serial_no', render: esc },
             { data: 'start_date', render: esc },
             { data: 'end_date', render: esc },
-            { data: 'status', orderable: false, searchable: false, render: statusBadge },
+            { data: 'status', orderable: false, searchable: false, render: (d, type, row) =>
+                statusBadge(d) + (row.auto_renew ? ' <span class="badge bg-info text-dark"><i class="fas fa-sync-alt"></i> Auto-renew</span>' : '')
+            },
             @if ($canManage)
             { data: null, orderable: false, searchable: false, render: (data, type, row) =>
                 '<div class="btn-group btn-group-sm" role="group">'

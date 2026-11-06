@@ -116,6 +116,7 @@ class MaintenanceController extends Controller
                 'start_date' => $c->start_date ? $c->start_date->format('M d, Y') : '-',
                 'end_date' => $c->end_date ? $c->end_date->format('M d, Y') : '-',
                 'status' => $expired ? 'expired' : ($active ? 'active' : 'inactive'),
+                'auto_renew' => (bool) $c->auto_renew,
                 'edit_url' => $canManage ? route('maintenance.edit', $c->id) : null,
             ];
         });
@@ -479,6 +480,12 @@ class MaintenanceController extends Controller
         return $months > 0 && abs($total - $months) < 0.01 ? $months : null;
     }
 
+    /** "auto renew", "Auto-Renew", "autorenewal", "automatic renewal"... in the end_date cell. */
+    private function isAutoRenew(string $endDate): bool
+    {
+        return (bool) preg_match('/^auto(matic)?[\s\-_]*renew(al|ed|s|ing)?$/i', trim($endDate));
+    }
+
     /** "N/A", "NA", "n.a.", "none", "-": a serial cell that says there is none. */
     private function isNoSerial(?string $serial): bool
     {
@@ -582,7 +589,22 @@ class MaintenanceController extends Controller
                 }
             }
 
-            if ($data['end_date'] !== '') {
+            $autoRenew = $this->isAutoRenew($data['end_date']);
+
+            if ($autoRenew) {
+                if (! $months) {
+                    $skip('auto renew needs coverage_months to know how long each term is', 'auto renew without coverage_months');
+                    continue;
+                }
+
+                // Start + coverage, then rolled forward to the term it is in
+                // today, so an auto-renew contract never loads as expired.
+                [$start, $end] = MaintenanceContract::currentTerm(
+                    $start,
+                    $start->copy()->addMonthsNoOverflow($months),
+                    $months
+                );
+            } elseif ($data['end_date'] !== '') {
                 $end = $this->parseCsvDate($data['end_date']);
                 if (! $end) {
                     $skip(
@@ -625,6 +647,8 @@ class MaintenanceController extends Controller
                 'start_date' => $start,
                 'end_date' => $end,
                 'remarks' => $data['remarks'] ?: null,
+                // A renewal row with a real end date turns auto-renew off.
+                'auto_renew' => $autoRenew,
             ];
 
             if ($this->isNoSerial($data['serial_no'])) {

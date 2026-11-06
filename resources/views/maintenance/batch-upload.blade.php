@@ -67,6 +67,14 @@
                                     worked out from the two dates.
                                 </li>
                                 <li>
+                                    <code>end_date</code> can say <strong>auto renew</strong> (also auto-renew,
+                                    autorenewal, automatic renewal). The end date is then <code>start_date</code> +
+                                    <code>coverage_months</code>, and when it is reached the contract renews itself:
+                                    the old end date becomes the new start date and a new end date is worked out from
+                                    the coverage. A contract whose terms have already passed is loaded straight into
+                                    its current term. <code>coverage_months</code> is required for these rows.
+                                </li>
+                                <li>
                                     <code>coverage_months</code> can include words: <code>36</code>,
                                     <code>36 months</code>, <code>36 mos</code>, <code>1 year</code>,
                                     <code>2 yrs</code>, <code>1.5 years</code>, <code>1 year and 6 months</code>
