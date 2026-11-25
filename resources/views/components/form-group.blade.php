@@ -44,7 +44,14 @@
             class="form-control @error($name) is-invalid @enderror"
             id="{{ $name }}"
             name="{{ $name }}"
-            value="{{ old($name, $value) }}"
+            {{-- Password boxes never echo a value back and ask the browser not
+                 to offer saved ones (scan QID 150112: shared PCs at branches). --}}
+            @if ($type === 'password')
+                value=""
+                autocomplete="off"
+            @else
+                value="{{ old($name, $value) }}"
+            @endif
             {{ $required ? 'required' : '' }}
             {{ $step ? "step=$step" : '' }}
             {{ $min !== null ? "min=$min" : '' }}

@@ -30,7 +30,11 @@ return [
 
     'domain' => env('SESSION_DOMAIN'),
 
-    'secure' => env('SESSION_SECURE_COOKIES', false),
+    // null = "Secure whenever the request came in over HTTPS" (Symfony applies
+    // it per response), so production cookies — session and remember-me —
+    // carry the Secure flag (scan QID 150122) while plain-HTTP local dev
+    // still works. Set SESSION_SECURE_COOKIE=true to force it everywhere.
+    'secure' => env('SESSION_SECURE_COOKIE', env('SESSION_SECURE_COOKIES')),
 
     'http_only' => true,
 

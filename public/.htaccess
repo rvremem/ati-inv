@@ -5,6 +5,19 @@
 
     RewriteEngine On
 
+    # Refuse TRACE/TRACK (security scan QIDs 150844, 150823: Cross Site
+    # Tracing). The proper fix is "TraceEnable Off" in httpd.conf; this
+    # covers it from the app folder as well.
+    RewriteCond %{REQUEST_METHOD} ^TRAC[EK]$ [NC]
+    RewriteRule .* - [R=405,L]
+
+    # Refuse legacy HTTP/1.0 with 505 (scan QID 530600). Every browser speaks
+    # HTTP/1.1 or newer. If a load balancer or uptime monitor in front of the
+    # app still talks HTTP/1.0, it will get 505 too, so remove this block
+    # if one does.
+    RewriteCond %{SERVER_PROTOCOL} ^HTTP/1\.0$
+    RewriteRule .* - [R=505,L]
+
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]

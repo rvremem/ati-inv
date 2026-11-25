@@ -227,7 +227,11 @@ Route::middleware('auth')->group(function () {
     });
 
     // Reports
-    Route::prefix('reports')->name('reports.')->group(function () {
+    // Every report filter is echoed back into its page, so report.dates strips
+    // anything that is not a real Y-m-d before it gets there. The CSV exports
+    // are the heaviest queries in the app (flagged by the scan as DoS-prone),
+    // so each is capped at 10 a minute per user.
+    Route::prefix('reports')->name('reports.')->middleware('report.dates')->group(function () {
         Route::get('/', [ReportController::class, 'index'])->name('index');
         Route::get('receiving', [ReportController::class, 'receivingReport'])->name('receiving');
         Route::get('receiving/data', [ReportController::class, 'receivingData'])->name('receiving-data');
@@ -239,7 +243,7 @@ Route::middleware('auth')->group(function () {
         // Gated to SA/Developer inside the controller, not here, so the
         // refusal is enforced even if the link is reached directly.
         Route::get('cost', [ReportController::class, 'costReport'])->name('cost');
-        Route::get('cost/csv', [ReportController::class, 'costReportCsv'])->name('cost-csv');
+        Route::get('cost/csv', [ReportController::class, 'costReportCsv'])->middleware('throttle:10,1')->name('cost-csv');
         Route::get('machines', [ReportController::class, 'machineReport'])->name('machines');
         Route::get('machines/data', [ReportController::class, 'machineData'])->name('machines-data');
         Route::get('machine-inbound', [ReportController::class, 'machineInboundReport'])->name('machine-inbound');
@@ -252,16 +256,17 @@ Route::middleware('auth')->group(function () {
         Route::get('maintenance/data', [ReportController::class, 'maintenanceData'])->name('maintenance-data');
         Route::get('activity-log', [ReportController::class, 'activityLog'])->name('activity-log');
         Route::get('activity-log/data', [ReportController::class, 'activityLogData'])->name('activity-log-data');
-        Route::get('activity-log/csv', [ReportController::class, 'activityLogCsv'])->name('activity-log-csv');
-        Route::get('stock/csv', [ReportController::class, 'stockReportCsv'])->name('stock-csv');
+        Route::get('activity-log/csv', [ReportController::class, 'activityLogCsv'])->middleware('throttle:10,1')->name('activity-log-csv');
+        Route::get('stock/csv', [ReportController::class, 'stockReportCsv'])->middleware('throttle:10,1')->name('stock-csv');
         Route::get('request-status', [ReportController::class, 'requestStatus'])->name('request-status');
-        Route::get('request-status/csv', [ReportController::class, 'requestStatusCsv'])->name('request-status-csv');
+        Route::get('request-status/csv', [ReportController::class, 'requestStatusCsv'])->middleware('throttle:10,1')->name('request-status-csv');
 
         // One CSV endpoint for every DataTables-backed report; the slug
         // picks which one, and unknown slugs 404. Registered last so it
         // cannot shadow a named route above.
         Route::get('{report}/csv', [ReportController::class, 'exportCsv'])
             ->whereIn('report', array_keys(ReportController::CSV_REPORTS))
+            ->middleware('throttle:10,1')
             ->name('export-csv');
     });
 

@@ -53,11 +53,18 @@
 
 @section('scripts')
 @include('partials.datatable-helpers')
+@php
+    // Assigned first, then passed to @json as a single variable. @json splits
+    // its argument on commas, so inlining request()->only([...]) here passed
+    // the second key as the json_encode flags and dropped JSON_HEX_TAG —
+    // the filter was reflected unescaped into the script (reflected XSS).
+    $filters = request()->only(['as_of_date', 'hub_id']);
+@endphp
 <script>
 $(function () {
     $('#machinesReportTable').DataTable(reportTableOptions(
         '{{ route('reports.machines-data') }}',
-        @json(request()->only(['as_of_date', 'hub_id'])),
+        @json($filters),
         [
             { data: 'date_received', render: esc },
             { data: 'serial_no', render: (d) => '<strong>' + esc(d) + '</strong>' },

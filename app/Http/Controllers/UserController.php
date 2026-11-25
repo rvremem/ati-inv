@@ -143,22 +143,22 @@ class UserController extends Controller
         $validated = $request->validate([
             'name' => 'required',
             'email' => "nullable|email|unique:users,email,{$user->id}",
-            'current_password' => 'required_if:password,!=null',
-            'password' => 'nullable|min:6|confirmed',
+            'current_password' => 'nullable|string|required_with:password',
+            'password' => 'nullable|string|min:6|confirmed',
         ]);
 
-        if ($validated['password'] && !password_verify($validated['current_password'], $user->password)) {
-            return back()->with('error', 'Current password is incorrect.');
-        }
+        // Every key is read with ?? null: a nullable field that is not
+        // submitted at all is absent from the validated array, and reading it
+        // directly threw (a 500 the security scan flagged on this route).
+        $newPassword = $validated['password'] ?? null;
+        $currentPassword = (string) ($validated['current_password'] ?? '');
+        unset($validated['password'], $validated['current_password']);
 
-        // ?? null because a nullable field that is not submitted at all is
-        // absent from the validated array rather than empty. The forms always
-        // post the box, so this only bites a caller that does not — but it
-        // threw an undefined-key error when one did.
-        if ($validated['password'] ?? null) {
-            $validated['password'] = bcrypt($validated['password']);
-        } else {
-            unset($validated['password']);
+        if ($newPassword) {
+            if (!password_verify($currentPassword, $user->password)) {
+                return back()->with('error', 'Current password is incorrect.');
+            }
+            $validated['password'] = bcrypt($newPassword);
         }
 
         $user->update($validated);
