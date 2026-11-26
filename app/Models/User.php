@@ -163,6 +163,43 @@ class User extends Authenticatable implements MustVerifyEmail
         return $this->role === 'Engineer';
     }
 
+    /**
+     * Who may use Return Parts right now.
+     *
+     * Admin, Super Admin and Developer always. Engineers only inside the
+     * after-hours window (App\Support\EngineerReturnWindow), and what they
+     * return waits for approval — see returnNeedsApproval().
+     */
+    public function canReturnParts(): bool
+    {
+        if ($this->isSA() || $this->isAdmin()) {
+            return true;
+        }
+
+        return $this->isEngineer() && \App\Support\EngineerReturnWindow::isOpen();
+    }
+
+    /** An Engineer's return is held as 'Pending Return' until approved. */
+    public function returnNeedsApproval(): bool
+    {
+        return ! ($this->isSA() || $this->isAdmin());
+    }
+
+    /** Admin, Super Admin and Developer approve or decline pending returns. */
+    public function canApproveReturns(): bool
+    {
+        return $this->isSA() || $this->isAdmin();
+    }
+
+    /**
+     * Who may mark an outbound part Used or Unused on the Outbound report.
+     * Admin, Super Admin and Developer only; Parts Center sees it read-only.
+     */
+    public function canMarkPartUsage(): bool
+    {
+        return $this->isSA() || $this->isAdmin();
+    }
+
     public function activityLogs()
     {
         return $this->hasMany(ActivityLog::class);

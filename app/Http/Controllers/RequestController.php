@@ -696,6 +696,16 @@ class RequestController extends Controller
             ->where('status', 'Pending')
             ->get();
         $locations = Location::where('is_active', true)->get();
-        return view('requests.pending', compact('partRequests', 'machinePartRequests', 'machineRequests', 'locations'));
+
+        // Engineers' after-hours returns, waiting for an Admin or Super Admin.
+        // Receiving's hub scope applies, though both roles see every hub.
+        $pendingReturns = auth()->user()->canApproveReturns()
+            ? \App\Models\Receiving::with('itemPart', 'location', 'customer', 'hub', 'createdBy')
+                ->where('status', ReceivingController::PENDING_RETURN)
+                ->orderBy('created_at')
+                ->get()
+            : collect();
+
+        return view('requests.pending', compact('partRequests', 'machinePartRequests', 'machineRequests', 'locations', 'pendingReturns'));
     }
 }

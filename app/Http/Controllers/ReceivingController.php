@@ -233,8 +233,45 @@ class ReceivingController extends Controller
         return redirect()->route('receiving.items')->with('success', count($validated['item_part_id']) . ' part(s) received successfully.');
     }
 
+    /**
+     * Receiving status an Engineer's after-hours return is held in.
+     *
+     * Deliberately not in InventoryController::ON_HAND_STATUSES, so a pending
+     * return adds nothing to stock. It is also the newest row for its serial,
+     * so the "latest status is Out" lookups stop offering that serial for a
+     * second return while the first is waiting.
+     */
+    public const PENDING_RETURN = 'Pending Return';
+
+    /**
+     * Refuses a user outside their Return Parts access, explaining when an
+     * Engineer can come back rather than a bare 403.
+     */
+    private function authorizeReturnParts(): void
+    {
+        $user = auth()->user();
+
+        if ($user->canReturnParts()) {
+            return;
+        }
+
+        abort(403, $user->isEngineer()
+            ? 'Engineers can return parts ' . \App\Support\EngineerReturnWindow::describe() . '.'
+            : 'You do not have access to Return Parts.');
+    }
+
     public function returnPartsStore(Request $request)
     {
+        // Checked again on submit, not only when the page opens: a form left
+        // open at 7:55 AM must not be accepted at 8:05.
+        if (! auth()->user()->canReturnParts()) {
+            return redirect()->route('dashboard')->with('warning', auth()->user()->isEngineer()
+                ? 'The after-hours return window has closed. Engineers can return parts ' . \App\Support\EngineerReturnWindow::describe() . '.'
+                : 'You do not have access to Return Parts.');
+        }
+
+        $needsApproval = auth()->user()->returnNeedsApproval();
+
         $validated = $request->validate([
             'date_received' => 'required|date',
             'customer_id' => 'required|exists:customers,id',
@@ -256,11 +293,29 @@ class ReceivingController extends Controller
             $validated['hub_id'] = $allowedHub;
         }
 
+        // A serial already waiting for approval cannot be submitted again. The
+        // form no longer offers it, but the posted value can be edited.
+        $serials = array_values(array_filter(array_map(fn ($s) => trim((string) $s), $validated['serial_no'] ?? [])));
+        if ($serials !== []) {
+            $alreadyPending = Receiving::whereIn('serial_no', $serials)
+                ->where('status', self::PENDING_RETURN)
+                ->pluck('serial_no');
+
+            if ($alreadyPending->isNotEmpty()) {
+                return back()->withInput()->withErrors([
+                    'serial_no' => 'Already waiting for return approval: ' . $alreadyPending->implode(', ') . '.',
+                ]);
+            }
+        }
+
         $serialised = $this->serialisedFlags($validated['item_part_id']);
+        $partNos = ItemPart::whereIn('id', $validated['item_part_id'])->pluck('part_no', 'id');
+        $locationCodes = Location::whereIn('id', $validated['location_id'])->pluck('code', 'id');
 
         foreach ($validated['item_part_id'] as $index => $itemId) {
             // One serial, one unit — see serialisedFlags().
             $quantity = $serialised->get($itemId) ? 1 : (int) $validated['quantity'][$index];
+            $serial = $validated['serial_no'][$index] ?? null;
 
             Receiving::create([
                 'date_received' => $validated['date_received'],
@@ -269,15 +324,99 @@ class ReceivingController extends Controller
                 'location_id' => $validated['location_id'][$index],
                 'hub_id' => $validated['hub_id'] ?? null,
                 'quantity' => $quantity,
-                'serial_no' => $validated['serial_no'][$index] ?? null,
+                'serial_no' => $serial,
                 'return_remarks' => $validated['remarks'] ?? null,
-                'status' => 'Return',
+                'status' => $needsApproval ? self::PENDING_RETURN : 'Return',
+                // Who brought it back. An approved return keeps this, so the
+                // row still names the Engineer after an Admin accepts it.
+                'returned_by' => auth()->user()->name,
+                'return_date' => $needsApproval ? null : now(),
                 'created_by' => auth()->id(),
             ]);
+
+            ActivityLog::log(
+                $needsApproval ? 'Returned Parts (Pending Approval)' : 'Returned Parts',
+                $this->receivingRemark(
+                    $partNos[$itemId] ?? "ID {$itemId}",
+                    $serial,
+                    $quantity,
+                    $locationCodes[$validated['location_id'][$index]] ?? '-',
+                    $validated['date_received']
+                )
+            );
         }
 
-        ActivityLog::log('Returned Parts', count($validated['item_part_id']) . ' part(s) returned');
-        return redirect()->route('receiving.return-parts')->with('success', count($validated['item_part_id']) . ' part(s) returned successfully.');
+        $count = count($validated['item_part_id']);
+
+        return redirect()->route('receiving.return-parts')->with('success', $needsApproval
+            ? "{$count} part(s) submitted. They will be added back to stock once an Admin or Super Admin approves the return."
+            : "{$count} part(s) returned successfully.");
+    }
+
+    /**
+     * Accepts an Engineer's after-hours return: the row becomes a normal
+     * 'Return' and from then on counts as stock.
+     */
+    public function returnPartsApprove(Receiving $receiving)
+    {
+        abort_unless(auth()->user()->canApproveReturns(), 403, 'Only an Admin or Super Admin can approve returns.');
+
+        if ($receiving->status !== self::PENDING_RETURN) {
+            return redirect()->route('requests.pending')->with('warning', 'That return has already been handled.');
+        }
+
+        $receiving->update([
+            'status' => 'Return',
+            'return_date' => now(),
+        ]);
+
+        $receiving->loadMissing('itemPart', 'location');
+
+        ActivityLog::log('Approved Part Return', $this->receivingRemark(
+            $receiving->itemPart->part_no ?? "ID {$receiving->item_part_id}",
+            $receiving->serial_no,
+            (int) $receiving->quantity,
+            $receiving->location->code ?? '-',
+            $receiving->date_received
+        ) . ' | Returned by: ' . ($receiving->returned_by ?: '-'));
+
+        return redirect()->route('requests.pending')->with('success', 'Return approved and added back to stock.');
+    }
+
+    /**
+     * Rejects an Engineer's after-hours return.
+     *
+     * The pending row is removed rather than kept under another status. Every
+     * serial lookup takes a serial's newest row as its state; a leftover
+     * 'Return Declined' row would hide the part's real 'Out' and leave it
+     * impossible to return at all. Removing it puts the part back exactly
+     * where it was — still out — and the activity log keeps the record.
+     */
+    public function returnPartsDecline(Request $request, Receiving $receiving)
+    {
+        abort_unless(auth()->user()->canApproveReturns(), 403, 'Only an Admin or Super Admin can decline returns.');
+
+        $reason = trim((string) $request->validate([
+            'decline_remarks' => 'required|string|max:500',
+        ])['decline_remarks']);
+
+        if ($receiving->status !== self::PENDING_RETURN) {
+            return redirect()->route('requests.pending')->with('warning', 'That return has already been handled.');
+        }
+
+        $receiving->loadMissing('itemPart', 'location');
+
+        ActivityLog::log('Declined Part Return', $this->receivingRemark(
+            $receiving->itemPart->part_no ?? "ID {$receiving->item_part_id}",
+            $receiving->serial_no,
+            (int) $receiving->quantity,
+            $receiving->location->code ?? '-',
+            $receiving->date_received
+        ) . ' | Returned by: ' . ($receiving->returned_by ?: '-') . ' | Reason: ' . $reason);
+
+        $receiving->delete();
+
+        return redirect()->route('requests.pending')->with('success', 'Return declined. The part remains out.');
     }
 
     public function itemReceivingEdit(Receiving $receiving)
@@ -387,10 +526,27 @@ class ReceivingController extends Controller
 
     public function returnParts()
     {
+        $this->authorizeReturnParts();
+
         $locations = Location::where('is_active', true)->get();
         $customers = Customer::where('is_active', true)->get();
         $hubs = $this->selectableHubs();
-        return view('receiving.returns.parts-index', compact('locations', 'customers', 'hubs'));
+        $needsApproval = auth()->user()->returnNeedsApproval();
+
+        // An Engineer sees what they have handed in that is still waiting.
+        $myPendingReturns = $needsApproval
+            ? Receiving::with('itemPart', 'location')
+                ->where('status', self::PENDING_RETURN)
+                ->where('created_by', auth()->id())
+                ->latest()
+                ->get()
+            : collect();
+
+        $windowText = \App\Support\EngineerReturnWindow::describe();
+
+        return view('receiving.returns.parts-index', compact(
+            'locations', 'customers', 'hubs', 'needsApproval', 'myPendingReturns', 'windowText'
+        ));
     }
 
     public function returnMachines()

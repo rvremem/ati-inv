@@ -133,6 +133,9 @@ Route::middleware('auth')->group(function () {
 
         Route::get('return-parts', [ReceivingController::class, 'returnParts'])->name('return-parts');
         Route::post('return-parts', [ReceivingController::class, 'returnPartsStore'])->name('return-parts-store');
+        // Approval of Engineers' after-hours returns. Gated to Admin/SA in the controller.
+        Route::post('return-parts/{receiving}/approve', [ReceivingController::class, 'returnPartsApprove'])->name('return-parts-approve');
+        Route::post('return-parts/{receiving}/decline', [ReceivingController::class, 'returnPartsDecline'])->name('return-parts-decline');
         Route::get('return-machines', [ReceivingController::class, 'returnMachines'])->name('return-machines');
         Route::post('return-machines', [ReceivingController::class, 'returnMachinesStore'])->name('return-machines-store');
     });
@@ -237,6 +240,7 @@ Route::middleware('auth')->group(function () {
         Route::get('receiving/data', [ReportController::class, 'receivingData'])->name('receiving-data');
         Route::get('outbound', [ReportController::class, 'outboundReport'])->name('outbound');
         Route::get('outbound/data', [ReportController::class, 'outboundData'])->name('outbound-data');
+        Route::post('outbound/{partRequest}/usage', [ReportController::class, 'outboundToggleUsage'])->name('outbound-usage');
         Route::get('defective', [ReportController::class, 'defectiveReport'])->name('defective');
         Route::get('defective/data', [ReportController::class, 'defectiveData'])->name('defective-data');
         Route::get('stock', [ReportController::class, 'stockReport'])->name('stock');

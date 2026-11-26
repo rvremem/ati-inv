@@ -8,7 +8,78 @@
 
     <x-alert />
 
-    <div class="card mb-4">
+    @php
+        // Sections with something to act on come first, empty ones sink to
+        // the bottom. Within each group, outbound comes first: part requests,
+        // then machine requests, then machine parts, then returns.
+        $sectionOrder = fn ($items, int $priority) => ($items->isEmpty() ? 10 : 0) + $priority;
+    @endphp
+
+    <div class="d-flex flex-column">
+
+    @if(auth()->user()->canApproveReturns())
+    <div class="card mb-4" style="order: {{ $sectionOrder($pendingReturns, 4) }}">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">Pending Part Returns</h5>
+            <small class="text-muted">Returned by Engineers after hours. Not counted as stock until approved.</small>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-bordered table-striped">
+                    <thead>
+                        <tr>
+                            <th>Part Number</th>
+                            <th>Description</th>
+                            <th>Quantity</th>
+                            <th>Serial</th>
+                            <th>Location</th>
+                            <th>Hub</th>
+                            <th>Client</th>
+                            <th>Returned By</th>
+                            <th>Submitted</th>
+                            <th>Remarks</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach ($pendingReturns as $ret)
+                            <tr>
+                                <td><strong>{{ $ret->itemPart->part_no ?? '-' }}</strong></td>
+                                <td>{{ $ret->itemPart->description ?? '-' }}</td>
+                                <td>{{ $ret->quantity }}</td>
+                                <td>{{ $ret->serial_no ?: '-' }}</td>
+                                <td>{{ $ret->location->code ?? '-' }}</td>
+                                <td>{{ $ret->hub->hub_name ?? '-' }}</td>
+                                <td>{{ $ret->customer->name ?? '-' }}</td>
+                                <td>{{ $ret->returned_by ?: ($ret->createdBy->name ?? '-') }}</td>
+                                <td>
+                                    {{-- Stored in UTC; shown in branch time, which is
+                                         what the after-hours window is measured in. --}}
+                                    {{ $ret->created_at?->copy()->setTimezone(\App\Support\EngineerReturnWindow::timezone())->format('Y-m-d h:i A') ?? '-' }}
+                                </td>
+                                <td>{{ $ret->return_remarks ?: '-' }}</td>
+                                <td class="text-nowrap">
+                                    <form method="POST" action="{{ route('receiving.return-parts-approve', $ret) }}" class="d-inline"
+                                          onsubmit="return confirm('Approve this return and add it back to stock?');">
+                                        @csrf
+                                        <button type="submit" class="btn btn-primary btn-sm">Approve</button>
+                                    </form>
+                                    <button type="button" class="btn btn-danger btn-sm return-decline-btn"
+                                        data-bs-toggle="modal" data-bs-target="#returnDeclineModal"
+                                        data-action="{{ route('receiving.return-parts-decline', $ret) }}">
+                                        Decline
+                                    </button>
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    @endif
+
+    <div class="card mb-4" style="order: {{ $sectionOrder($partRequests, 1) }}">
         <div class="card-header">
             <h5 class="mb-0">Pending Part Requests</h5>
         </div>
@@ -60,7 +131,7 @@
         </div>
     </div>
 
-    <div class="card mb-4">
+    <div class="card mb-4" style="order: {{ $sectionOrder($machineRequests, 2) }}">
         <div class="card-header">
             <h5 class="mb-0">Pending Machine Requests</h5>
         </div>
@@ -111,7 +182,7 @@
         </div>
     </div>
 
-    <div class="card">
+    <div class="card mb-4" style="order: {{ $sectionOrder($machinePartRequests, 3) }}">
         <div class="card-header">
             <h5 class="mb-0">Pending Machine Part Requests</h5>
         </div>
@@ -175,6 +246,31 @@
                     </tbody>
                 </table>
             </div>
+        </div>
+    </div>
+
+    </div>{{-- /d-flex section ordering --}}
+</div>
+
+<!-- PART RETURN DECLINE MODAL -->
+<div class="modal fade" id="returnDeclineModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Decline Part Return</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="returnDeclineForm" method="POST">
+                @csrf
+                <div class="modal-body">
+                    <p>Decline this return? The part will stay <strong>out</strong> and can be returned again.</p>
+                    @include('requests.partials.decline-remarks')
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-danger">Decline</button>
+                </div>
+            </form>
         </div>
     </div>
 </div>
@@ -562,6 +658,13 @@ document.querySelectorAll('.mp-decline-btn').forEach(btn => {
     btn.addEventListener('click', function() {
         document.getElementById('machinePartDeclineForm').action = `/requests/machine-parts/${this.dataset.id}/decline`;
         clearDeclineRemarks('machinePartDeclineForm');
+    });
+});
+
+document.querySelectorAll('.return-decline-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        document.getElementById('returnDeclineForm').action = this.dataset.action;
+        clearDeclineRemarks('returnDeclineForm');
     });
 });
 

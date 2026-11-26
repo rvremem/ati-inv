@@ -656,6 +656,15 @@
                     <!-- <li class="sidebar-section-label">Inventory</li>
                     <li><a href="{{ route('inventory.items') }}" class="@if(request()->routeIs('inventory.items*')) active @endif"><span class="nav-icon"><i class="fas fa-boxes"></i></span> Items</a></li> -->
 
+                    {{-- After-hours mode: shown only while the window is open
+                         (weekday evenings/early mornings and weekends) — see
+                         App\Support\EngineerReturnWindow. Returns made here
+                         wait for Admin/SA approval. --}}
+                    @if(Auth::user()->canReturnParts())
+                        <li class="sidebar-section-label">Inbound (After Hours)</li>
+                        <li><a href="{{ route('receiving.return-parts') }}" class="@if(request()->routeIs('receiving.return-parts*')) active @endif"><span class="nav-icon"><i class="fas fa-undo-alt"></i></span> Return Parts</a></li>
+                    @endif
+
                     <li class="sidebar-section-label">Outbound</li>
                     <li><a href="{{ route('requests.parts') }}" class="@if(request()->routeIs('requests.parts*')) active @endif"><span class="nav-icon"><i class="fas fa-hand-holding"></i></span> Request Parts</a></li>
                     <li><a href="{{ route('requests.machines') }}" class="@if(request()->routeIs('requests.machines*')) active @endif"><span class="nav-icon"><i class="fas fa-dolly"></i></span> Request Machine</a></li>

@@ -8,6 +8,17 @@
 
     <x-alert />
 
+    @if($needsApproval)
+        <div class="alert alert-info d-flex align-items-start gap-2">
+            <i class="fas fa-moon mt-1"></i>
+            <div>
+                <strong>After-hours return.</strong>
+                Engineers can return parts {{ $windowText }}. What you submit is held as
+                <strong>Pending Return</strong> and is added back to stock only once an Admin or Super Admin approves it.
+            </div>
+        </div>
+    @endif
+
     <div class="card">
         <div class="card-body">
             <form id="returnForm" method="POST" action="{{ route('receiving.return-parts-store') }}">
@@ -85,12 +96,50 @@
                         <i class="fas fa-times"></i> Cancel
                     </a>
                     <button type="submit" id="submitBtn" class="btn btn-primary" hidden>
-                        <i class="fas fa-save"></i> Return Item/s
+                        <i class="fas fa-save"></i> {{ $needsApproval ? 'Submit Return for Approval' : 'Return Item/s' }}
                     </button>
                 </div>
             </form>
         </div>
     </div>
+
+    @if($needsApproval)
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="mb-0">My Returns Awaiting Approval</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-bordered table-striped">
+                        <thead>
+                            <tr>
+                                <th>Part Number</th>
+                                <th>Description</th>
+                                <th>Quantity</th>
+                                <th>Serial</th>
+                                <th>Location</th>
+                                <th>Submitted</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach($myPendingReturns as $ret)
+                                <tr>
+                                    <td><strong>{{ $ret->itemPart->part_no ?? '-' }}</strong></td>
+                                    <td>{{ $ret->itemPart->description ?? '-' }}</td>
+                                    <td>{{ $ret->quantity }}</td>
+                                    <td>{{ $ret->serial_no ?: '-' }}</td>
+                                    <td>{{ $ret->location->code ?? '-' }}</td>
+                                    <td>{{ $ret->created_at?->copy()->setTimezone(\App\Support\EngineerReturnWindow::timezone())->format('Y-m-d h:i A') ?? '-' }}</td>
+                                    <td><span class="badge bg-warning text-dark">Pending Approval</span></td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    @endif
 </div>
 
 <script>
