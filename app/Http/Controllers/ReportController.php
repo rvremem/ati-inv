@@ -274,8 +274,42 @@ class ReportController extends Controller
                 'quantity' => $r->quantity,
                 'location' => $r->location->code ?? '-',
                 'status' => $r->status,
+                'usage' => $r->is_used ? 'Used' : 'Unused',
+                // Underscored keys are for the page only; the CSV drops them.
+                '_usage_url' => route('reports.outbound-usage', $r->id),
             ]
         );
+    }
+
+    /**
+     * Flips one outbound part between Used and Unused, from the button on
+     * the Outbound report.
+     *
+     * The route binding goes through PartRequest's hub scope, so a request
+     * from another branch is a 404 here, same as everywhere else.
+     */
+    public function outboundToggleUsage(Request $request, PartRequest $partRequest)
+    {
+        abort_unless(auth()->user()->canMarkPartUsage(), 403, 'Only an Admin or Super Admin can mark parts as used.');
+
+        $validated = $request->validate(['is_used' => 'required|boolean']);
+        $isUsed = (bool) $validated['is_used'];
+
+        $partRequest->update(['is_used' => $isUsed]);
+
+        $partRequest->loadMissing('itemPart');
+
+        ActivityLog::log($isUsed ? 'Marked Part Used' : 'Marked Part Unused', sprintf(
+            'Item No: %s | %s | MRIS: %s',
+            $partRequest->itemPart->part_no ?? '-',
+            ActivityLog::unitLabel($partRequest->serial_no, (int) $partRequest->quantity),
+            $partRequest->mris_no ?: '-'
+        ));
+
+        return response()->json([
+            'is_used' => $partRequest->is_used,
+            'usage' => $partRequest->is_used ? 'Used' : 'Unused',
+        ]);
     }
 
     public function defectiveReport()
@@ -1110,6 +1144,13 @@ class ReportController extends Controller
         [$method, $slug] = self::CSV_REPORTS[$report];
 
         $rows = $this->{$method}($request->merge(['length' => 0]))->getData(true)['data'] ?? [];
+
+        // Keys starting with "_" carry page-only data, such as a button's
+        // URL, and are not columns of the report.
+        $rows = array_map(
+            fn ($row) => array_filter($row, fn ($key) => ! str_starts_with($key, '_'), ARRAY_FILTER_USE_KEY),
+            $rows
+        );
 
         return $this->streamRowsAsCsv($rows, $slug);
     }

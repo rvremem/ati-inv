@@ -45,6 +45,7 @@
                         <th>Quantity</th>
                         <th>Location</th>
                         <th>Status</th>
+                        <th>Usage</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
@@ -77,10 +78,53 @@ $(function () {
             { data: 'serial_no', render: esc },
             { data: 'quantity', className: 'text-center', render: esc },
             { data: 'location', orderable: false, render: esc },
-            { data: 'status', render: statusBadge }
+            { data: 'status', render: statusBadge },
+            // Every part starts Unused; one click marks it Used, another
+            // puts it back if it was clicked by mistake.
+            { data: 'usage', orderable: false, className: 'text-center', render: usageButton }
         ],
         [[0, 'desc']]
     ));
+
+    $('#outboundTable').on('click', '.usage-btn', function () {
+        const btn = $(this);
+        const makeUsed = btn.data('used') !== 1;
+
+        if (!confirm(makeUsed ? 'Mark this part as USED?' : 'Mark this part as UNUSED?')) {
+            return;
+        }
+
+        btn.prop('disabled', true);
+
+        $.ajax({
+            url: btn.data('url'),
+            method: 'POST',
+            data: { is_used: makeUsed ? 1 : 0, _token: '{{ csrf_token() }}' },
+        })
+        .done(res => {
+            btn.replaceWith(usageButton(res.usage, 'display', { _usage_url: btn.data('url') }));
+            notify(res.is_used ? 'Part marked as used.' : 'Part marked as unused.', 'success');
+        })
+        .fail(() => {
+            btn.prop('disabled', false);
+            notify('Could not update the part. Please try again.', 'error');
+        });
+    });
 });
+
+// Admin / Super Admin only; everyone else gets a read-only label. The
+// controller refuses the toggle for them too — this just hides the button.
+const CAN_MARK_USAGE = @json(auth()->user()->canMarkPartUsage());
+
+function usageButton(usage, type, row) {
+    const used = usage === 'Used';
+    if (!CAN_MARK_USAGE) {
+        return `<span class="badge ${used ? 'bg-success' : 'bg-secondary'}">${used ? 'Used' : 'Unused'}</span>`;
+    }
+    return `<button type="button" class="btn btn-sm usage-btn ${used ? 'btn-success' : 'btn-outline-secondary'}"
+                data-url="${esc(row._usage_url)}" data-used="${used ? 1 : 0}">
+                <i class="fas ${used ? 'fa-check-circle' : 'fa-circle'}"></i> ${used ? 'Used' : 'Unused'}
+            </button>`;
+}
 </script>
 @endsection

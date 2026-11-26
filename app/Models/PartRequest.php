@@ -55,9 +55,11 @@ class PartRequest extends Model
         'approved_by',
         'out_date',
         'requested_by',
+        'is_used',
     ];
 
     protected $casts = [
+        'is_used' => 'boolean',
         'pick_date' => 'date',
         'out_date' => 'datetime',
     ];
